@@ -1,0 +1,9 @@
+[workspace]
+members = [
+    "campaign",
+    "factory",
+    "common",
+]
+
+[workspace.dependencies]
+soroban-sdk = "20.0.0-rc2"
