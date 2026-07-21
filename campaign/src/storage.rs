@@ -12,7 +12,11 @@
 
 use soroban_sdk::{Address, Env};
 
-use crate::{AssetInfo, CampaignData, ContractStatus, DataKey};
+use crate::{AssetInfo, CampaignData, ContractStatus, DataKey, DonorRecord, MilestoneData};
+
+pub fn has_campaign_data(env: &Env) -> bool {
+    env.storage().persistent().has(&DataKey::CampaignData)
+}
 
 pub fn set_campaign_data(env: &Env, campaign_data: &CampaignData) {
     env.storage()
@@ -92,4 +96,34 @@ pub fn milestone_key(index: u32) -> DataKey {
 
 pub fn donor_key(donor: Address) -> DataKey {
     DataKey::DonorData(donor)
+}
+
+pub fn set_milestone_data(env: &Env, index: u32, milestone: &MilestoneData) {
+    env.storage()
+        .temporary()
+        .set(&milestone_key(index), milestone);
+}
+
+pub fn get_milestone_data(env: &Env, index: u32) -> Option<MilestoneData> {
+    env.storage().temporary().get(&milestone_key(index))
+}
+
+pub fn set_donor_data(env: &Env, donor: &Address, data: &DonorRecord) {
+    env.storage()
+        .temporary()
+        .set(&donor_key(donor.clone()), data);
+}
+
+pub fn get_donor_data(env: &Env, donor: &Address) -> Option<DonorRecord> {
+    env.storage().temporary().get(&donor_key(donor.clone()))
+}
+
+pub fn set_xlm_token(env: &Env, address: &Address) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::XlmTokenAddress, address);
+}
+
+pub fn get_xlm_token(env: &Env) -> Option<Address> {
+    env.storage().persistent().get(&DataKey::XlmTokenAddress)
 }

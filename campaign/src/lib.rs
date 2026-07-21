@@ -1,19 +1,13 @@
 #![no_std]
 
-use soroban_sdk::{contracttype, Address, Vec};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
+    Symbol, Vec,
+};
 
 pub mod storage;
 
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum AssetInfo {
-    Native,
-    Token(Address),
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, String, Vec};
-use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env, String,
-    Vec,
-};
+const MAX_MILESTONES: u32 = 5;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -33,13 +27,14 @@ pub enum Error {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataKey {
     CampaignData,
     MilestoneData(u32),
     DonorData(Address),
     TotalRaised,
     ContractStatus,
-    RaisedPerAsset,
+    RaisedPerAsset(AssetInfo),
     Locked,
     Admin,
     Frozen,
@@ -62,6 +57,10 @@ pub enum CampaignStatus {
 pub enum ContractStatus {
     Active,
     Paused,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MilestoneStatus {
     Locked,
     Unlocked,
@@ -70,15 +69,9 @@ pub enum MilestoneStatus {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AssetInfo {
-    pub asset_code: String,
-    pub issuer: Option<Address>,
-}
-
-impl AssetInfo {
-    pub fn is_xlm(&self) -> bool {
-        self.asset_code == String::from_str("XLM")
-    }
+pub enum AssetInfo {
+    Native,
+    Token(Address),
 }
 
 #[contracttype]
@@ -93,25 +86,30 @@ pub struct CampaignData {
     pub milestone_count: u32,
 }
 
+/// Creator-supplied milestone parameters accepted by `initialize`.
+///
+/// This intentionally excludes the runtime fields (`status`, `released_at`,
+/// `release_tx`) that only exist once a milestone has been recorded on-chain.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DataKey {
-    CampaignData,
-    MilestoneData(u32),
-    DonorData(Address),
-    TotalRaised,
-    ContractStatus,
-    RaisedPerAsset(AssetInfo),
-    Locked,
-    Admin,
-    Frozen,
+pub struct MilestoneInput {
+    pub target_amount: i128,
+    pub description_hash: BytesN<32>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MilestoneData {
     pub index: u32,
     pub target_amount: i128,
     pub description_hash: BytesN<32>,
     pub status: MilestoneStatus,
     pub released_at: Option<u64>,
-    pub release_tx: Option<BytesN<32>>,
+    /// Hash of the release transaction, or all-zero bytes if the milestone
+    /// has not been released yet. `soroban-sdk` 20.x cannot derive an XDR
+    /// `ScVal` conversion for `Option<BytesN<N>>`, so a sentinel is used
+    /// instead of `Option`.
+    pub release_tx: BytesN<32>,
 }
 
 #[contracttype]
@@ -130,64 +128,14 @@ pub struct DonorRecord {
     pub last_donation_time: u64,
 }
 
-pub mod storage {
-    use super::*;
-
-    pub fn has_campaign_data(env: &Env) -> bool {
-        env.storage().instance().has(&DataKey::CampaignData)
-    }
-
-    pub fn get_campaign_data(env: &Env) -> CampaignData {
-        env.storage()
-            .instance()
-            .get(&DataKey::CampaignData)
-            .expect("campaign not initialized")
-    }
-
-    pub fn set_campaign_data(env: &Env, data: &CampaignData) {
-        env.storage().instance().set(&DataKey::CampaignData, data);
-    }
-
-    pub fn has_donor_data(env: &Env, donor: &Address) -> bool {
-        env.storage()
-            .instance()
-            .has(&DataKey::DonorData(donor.clone()))
-    }
-
-    pub fn get_donor_data(env: &Env, donor: &Address) -> Option<DonorRecord> {
-        env.storage()
-            .instance()
-            .get(&DataKey::DonorData(donor.clone()))
-    }
-
-    pub fn set_donor_data(env: &Env, donor: &Address, data: &DonorRecord) {
-        env.storage()
-            .instance()
-            .set(&DataKey::DonorData(donor.clone()), data);
-    }
-
-    pub fn get_xlm_token(env: &Env) -> Address {
-        env.storage()
-            .instance()
-            .get(&DataKey::XlmTokenAddress)
-            .expect("XLM token address not set")
-    }
-
-    pub fn set_xlm_token(env: &Env, address: &Address) {
-        env.storage()
-            .instance()
-            .set(&DataKey::XlmTokenAddress, address);
-    }
+fn expect_campaign_data(env: &Env) -> CampaignData {
+    storage::get_campaign_data(env).expect("campaign not initialized")
 }
 
 fn get_token_address(env: &Env, asset: &AssetInfo) -> Address {
-    if asset.is_xlm() {
-        storage::get_xlm_token(env)
-    } else {
-        asset
-            .issuer
-            .clone()
-            .expect("non-XLM asset must have an issuer")
+    match asset {
+        AssetInfo::Native => storage::get_xlm_token(env).expect("XLM token address not set"),
+        AssetInfo::Token(address) => address.clone(),
     }
 }
 
@@ -205,12 +153,89 @@ pub struct CampaignContract;
 
 #[contractimpl]
 impl CampaignContract {
+    /// Deploys and initializes a campaign. Callable exactly once.
+    pub fn initialize(
+        env: Env,
+        creator: Address,
+        goal_amount: i128,
+        end_time: u64,
+        accepted_assets: Vec<AssetInfo>,
+        milestones: Vec<MilestoneInput>,
+    ) -> Result<(), Error> {
+        creator.require_auth();
+
+        if storage::has_campaign_data(&env) {
+            return Err(Error::AlreadyInitialized);
+        }
+
+        if goal_amount <= 0 {
+            return Err(Error::InvalidGoalAmount);
+        }
+
+        if end_time <= env.ledger().timestamp() {
+            return Err(Error::InvalidEndTime);
+        }
+
+        if accepted_assets.is_empty() {
+            return Err(Error::NoAcceptedAssets);
+        }
+
+        let milestone_count = milestones.len();
+        if milestone_count == 0 || milestone_count > MAX_MILESTONES {
+            return Err(Error::InvalidMilestones);
+        }
+
+        let mut previous_amount: i128 = 0;
+        for i in 0..milestone_count {
+            let milestone = milestones.get_unchecked(i);
+            if milestone.target_amount <= previous_amount {
+                return Err(Error::InvalidMilestones);
+            }
+            previous_amount = milestone.target_amount;
+        }
+
+        if milestones.get_unchecked(milestone_count - 1).target_amount != goal_amount {
+            return Err(Error::InvalidMilestones);
+        }
+
+        let campaign_data = CampaignData {
+            creator: creator.clone(),
+            goal_amount,
+            raised_amount: 0,
+            end_time,
+            status: CampaignStatus::Active,
+            accepted_assets: accepted_assets.clone(),
+            milestone_count,
+        };
+        storage::set_campaign_data(&env, &campaign_data);
+
+        for i in 0..milestone_count {
+            let input = milestones.get_unchecked(i);
+            let milestone_data = MilestoneData {
+                index: i,
+                target_amount: input.target_amount,
+                description_hash: input.description_hash.clone(),
+                status: MilestoneStatus::Locked,
+                released_at: None,
+                release_tx: BytesN::from_array(&env, &[0u8; 32]),
+            };
+            storage::set_milestone_data(&env, i, &milestone_data);
+        }
+
+        env.events().publish(
+            (Symbol::new(&env, "campaign_initialized"), creator),
+            (goal_amount, end_time, accepted_assets, milestones),
+        );
+
+        Ok(())
+    }
+
     pub fn get_campaign_info(env: Env) -> CampaignData {
-        storage::get_campaign_data(&env)
+        expect_campaign_data(&env)
     }
 
     pub fn require_creator(env: Env) {
-        let data = storage::get_campaign_data(&env);
+        let data = expect_campaign_data(&env);
         data.creator.require_auth();
     }
 
@@ -221,7 +246,7 @@ impl CampaignContract {
             panic!("amount must be positive");
         }
 
-        let mut data = storage::get_campaign_data(&env);
+        let mut data = expect_campaign_data(&env);
 
         if data.status != CampaignStatus::Active {
             panic!("campaign is not active");
@@ -273,12 +298,10 @@ impl CampaignContract {
             i += 1;
         }
         if !found {
-            donor_record
-                .per_asset
-                .push_back(PerAssetBreakdown {
-                    asset: asset.clone(),
-                    amount,
-                });
+            donor_record.per_asset.push_back(PerAssetBreakdown {
+                asset: asset.clone(),
+                amount,
+            });
         }
 
         storage::set_donor_data(&env, &donor, &donor_record);
@@ -289,3 +312,6 @@ impl CampaignContract {
         );
     }
 }
+
+#[cfg(test)]
+mod test;
