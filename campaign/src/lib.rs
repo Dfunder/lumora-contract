@@ -1,5 +1,14 @@
 #![no_std]
 
+use soroban_sdk::{contracttype, Address, Vec};
+
+pub mod storage;
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AssetInfo {
+    Native,
+    Token(Address),
 use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, String, Vec};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env, String,
@@ -41,6 +50,8 @@ pub enum DataKey {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CampaignStatus {
     Active,
+    Successful,
+    Failed,
     GoalReached,
     Ended,
     Cancelled,
@@ -48,6 +59,9 @@ pub enum CampaignStatus {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ContractStatus {
+    Active,
+    Paused,
 pub enum MilestoneStatus {
     Locked,
     Unlocked,
@@ -81,6 +95,16 @@ pub struct CampaignData {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DataKey {
+    CampaignData,
+    MilestoneData(u32),
+    DonorData(Address),
+    TotalRaised,
+    ContractStatus,
+    RaisedPerAsset(AssetInfo),
+    Locked,
+    Admin,
+    Frozen,
 pub struct MilestoneData {
     pub index: u32,
     pub target_amount: i128,
