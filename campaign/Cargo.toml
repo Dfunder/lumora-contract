@@ -6,5 +6,15 @@ edition = "2021"
 [dependencies]
 soroban-sdk = { workspace = true }
 
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }
+
 [lib]
 crate-type = ["cdylib"]
+
+[features]
+# soroban-sdk-macros 20.x emits `#[cfg(feature = "testutils")]` into whichever
+# crate invokes its macros. rustc's `unexpected_cfgs` lint checks that against
+# *this* crate's declared features, not soroban-sdk's, so without this the
+# `-D warnings` clippy/build step fails on every #[contracttype]/#[contract].
+testutils = ["soroban-sdk/testutils"]
