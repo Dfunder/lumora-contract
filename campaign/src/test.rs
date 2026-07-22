@@ -1,12 +1,13 @@
 use super::{
-    AssetInfo, CampaignContract, CampaignContractClient, CampaignStatus, Error, MilestoneInput,
+    storage, AssetInfo, CampaignContract, CampaignContractClient, CampaignStatus, Error,
+    MilestoneInput,
 };
 use soroban_sdk::{
     testutils::{Address as _, Ledger, LedgerInfo},
     Address, BytesN, Env, Vec,
 };
 
-fn setup(now: u64) -> (Env, CampaignContractClient<'static>) {
+fn setup_with_contract(now: u64) -> (Env, Address, CampaignContractClient<'static>) {
     let env = Env::default();
     env.ledger().set(LedgerInfo {
         timestamp: now,
@@ -22,6 +23,11 @@ fn setup(now: u64) -> (Env, CampaignContractClient<'static>) {
 
     let contract_id = env.register_contract(None, CampaignContract);
     let client = CampaignContractClient::new(&env, &contract_id);
+    (env, contract_id, client)
+}
+
+fn setup(now: u64) -> (Env, CampaignContractClient<'static>) {
+    let (env, _contract_id, client) = setup_with_contract(now);
     (env, client)
 }
 
@@ -41,6 +47,53 @@ fn ascending_milestones(env: &Env, goal_amount: i128) -> Vec<MilestoneInput> {
     milestones.push_back(milestone(env, goal_amount / 2));
     milestones.push_back(milestone(env, goal_amount));
     milestones
+}
+
+fn setup_donation_campaign(
+    now: u64,
+    end_time: u64,
+) -> (
+    Env,
+    Address,
+    CampaignContractClient<'static>,
+    Address,
+    AssetInfo,
+) {
+    let (env, contract_id, client) = setup_with_contract(now);
+    let creator = Address::generate(&env);
+    let donor = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_address = env.register_stellar_asset_contract(token_admin.clone());
+    let asset = AssetInfo::Token(token_address.clone());
+    let accepted_assets = Vec::from_array(&env, [asset.clone()]);
+    let goal_amount = 10_000;
+    let milestones = ascending_milestones(&env, goal_amount);
+
+    soroban_sdk::token::StellarAssetClient::new(&env, &token_address).mint(&donor, &10_000);
+    client.initialize(
+        &creator,
+        &goal_amount,
+        &end_time,
+        &accepted_assets,
+        &milestones,
+    );
+
+    (env, contract_id, client, donor, asset)
+}
+
+fn set_campaign_status(env: &Env, contract_id: &Address, status: CampaignStatus) {
+    env.as_contract(contract_id, || {
+        let mut data = storage::get_campaign_data(env).expect("campaign should be initialized");
+        data.status = status;
+        storage::set_campaign_data(env, &data);
+    });
+}
+
+fn token_address(asset: &AssetInfo) -> Address {
+    match asset {
+        AssetInfo::Token(address) => address.clone(),
+        AssetInfo::Native => panic!("test campaign should use a token asset"),
+    }
 }
 
 #[test]
@@ -312,6 +365,71 @@ fn more_than_five_milestones_fails() {
         &milestones,
     );
     assert_eq!(result, Err(Ok(Error::InvalidMilestones)));
+}
+
+#[test]
+fn donation_at_exact_end_time_succeeds() {
+    let now = 1_000;
+    let end_time = 2_000;
+    let (env, contract_id, client, donor, asset) = setup_donation_campaign(now, end_time);
+    env.ledger().with_mut(|ledger| ledger.timestamp = end_time);
+
+    client.donate(&donor, &250, &asset);
+
+    assert_eq!(client.get_campaign_info().raised_amount, 250);
+    let token = soroban_sdk::token::TokenClient::new(&env, &token_address(&asset));
+    assert_eq!(token.balance(&donor), 9_750);
+    assert_eq!(token.balance(&contract_id), 250);
+}
+
+#[test]
+fn donation_after_end_time_returns_campaign_ended() {
+    let now = 1_000;
+    let end_time = 2_000;
+    let (env, _contract_id, client, donor, asset) = setup_donation_campaign(now, end_time);
+    env.ledger()
+        .with_mut(|ledger| ledger.timestamp = end_time + 1);
+
+    let result = client.try_donate(&donor, &250, &asset);
+
+    assert_eq!(result, Err(Ok(Error::CampaignEnded)));
+    assert_eq!(client.get_campaign_info().raised_amount, 0);
+    let token = soroban_sdk::token::TokenClient::new(&env, &token_address(&asset));
+    assert_eq!(token.balance(&donor), 10_000);
+}
+
+#[test]
+fn donations_reject_all_inactive_statuses() {
+    for status in [
+        CampaignStatus::Successful,
+        CampaignStatus::Failed,
+        CampaignStatus::Ended,
+        CampaignStatus::Cancelled,
+    ] {
+        let now = 1_000;
+        let end_time = 2_000;
+        let (env, contract_id, client, donor, asset) = setup_donation_campaign(now, end_time);
+        set_campaign_status(&env, &contract_id, status);
+
+        let result = client.try_donate(&donor, &250, &asset);
+
+        assert_eq!(result, Err(Ok(Error::CampaignNotActive)));
+        assert_eq!(client.get_campaign_info().raised_amount, 0);
+    }
+}
+
+#[test]
+fn donation_while_goal_reached_succeeds() {
+    let now = 1_000;
+    let end_time = 2_000;
+    let (env, contract_id, client, donor, asset) = setup_donation_campaign(now, end_time);
+    set_campaign_status(&env, &contract_id, CampaignStatus::GoalReached);
+
+    client.donate(&donor, &250, &asset);
+
+    let data = client.get_campaign_info();
+    assert_eq!(data.raised_amount, 250);
+    assert_eq!(data.status, CampaignStatus::GoalReached);
 }
 
 #[test]

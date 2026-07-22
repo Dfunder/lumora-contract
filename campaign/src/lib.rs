@@ -239,7 +239,7 @@ impl CampaignContract {
         data.creator.require_auth();
     }
 
-    pub fn donate(env: Env, donor: Address, amount: i128, asset: AssetInfo) {
+    pub fn donate(env: Env, donor: Address, amount: i128, asset: AssetInfo) -> Result<(), Error> {
         donor.require_auth();
 
         if amount <= 0 {
@@ -248,15 +248,15 @@ impl CampaignContract {
 
         let mut data = expect_campaign_data(&env);
 
-        if data.status != CampaignStatus::Active {
-            panic!("campaign is not active");
+        if env.ledger().timestamp() > data.end_time {
+            return Err(Error::CampaignEnded);
         }
 
-        let deadline_reached = env.ledger().timestamp() >= data.end_time;
-        if deadline_reached {
-            data.status = CampaignStatus::Ended;
-            storage::set_campaign_data(&env, &data);
-            panic!("campaign has ended");
+        if !matches!(
+            data.status,
+            CampaignStatus::Active | CampaignStatus::GoalReached
+        ) {
+            return Err(Error::CampaignNotActive);
         }
 
         if !is_accepted_asset(&data.accepted_assets, &asset) {
@@ -310,6 +310,8 @@ impl CampaignContract {
             (symbol_short!("donation"),),
             (donor, amount, asset, data.raised_amount),
         );
+
+        Ok(())
     }
 }
 
