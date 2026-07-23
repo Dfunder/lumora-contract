@@ -290,11 +290,35 @@ impl CampaignContract {
 
         data.raised_amount += amount;
 
-        if data.raised_amount >= data.goal_amount {
+        let mut goal_just_reached = false;
+        if data.raised_amount >= data.goal_amount && data.status != CampaignStatus::GoalReached {
             data.status = CampaignStatus::GoalReached;
+            goal_just_reached = true;
+        }
+
+        for i in 0..data.milestone_count {
+            if let Some(mut milestone) = storage::get_milestone_data(&env, i) {
+                if milestone.status == MilestoneStatus::Locked
+                    && data.raised_amount >= milestone.target_amount
+                {
+                    milestone.status = MilestoneStatus::Unlocked;
+                    storage::set_milestone_data(&env, i, &milestone);
+                    env.events().publish(
+                        (symbol_short!("milestone"),),
+                        (i, milestone.target_amount),
+                    );
+                }
+            }
         }
 
         storage::set_campaign_data(&env, &data);
+
+        if goal_just_reached {
+            env.events().publish(
+                (symbol_short!("goal_reach"),),
+                (data.raised_amount, data.goal_amount),
+            );
+        }
 
         let mut donor_record = storage::get_donor_data(&env, &donor).unwrap_or(DonorRecord {
             donor: donor.clone(),
