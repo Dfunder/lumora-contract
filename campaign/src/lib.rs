@@ -24,6 +24,7 @@ pub enum Error {
     CampaignEnded = 10,
     CampaignCancelled = 11,
     DonationFailed = 12,
+    MilestoneNotFound = 13,
 }
 
 #[contracttype]
@@ -237,6 +238,26 @@ impl CampaignContract {
     pub fn require_creator(env: Env) {
         let data = expect_campaign_data(&env);
         data.creator.require_auth();
+    }
+
+    pub fn get_milestone(env: Env, index: u32) -> MilestoneData {
+        let data = expect_campaign_data(&env);
+        if index >= data.milestone_count {
+            panic!("MilestoneNotFound");
+        }
+        storage::get_milestone_data(&env, index)
+            .expect("MilestoneNotFound")
+    }
+
+    pub fn get_all_milestones(env: Env) -> Vec<MilestoneData> {
+        let data = expect_campaign_data(&env);
+        let mut milestones: Vec<MilestoneData> = Vec::new(&env);
+        for i in 0..data.milestone_count {
+            let milestone = storage::get_milestone_data(&env, i)
+                .expect("MilestoneNotFound");
+            milestones.push_back(milestone);
+        }
+        milestones
     }
 
     pub fn donate(env: Env, donor: Address, amount: i128, asset: AssetInfo) -> Result<(), Error> {
