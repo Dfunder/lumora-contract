@@ -1,6 +1,6 @@
 use super::{
     storage, AssetInfo, CampaignContract, CampaignContractClient, CampaignStatus, Error,
-    MilestoneInput,
+    MilestoneData, MilestoneInput, MilestoneStatus,
 };
 use soroban_sdk::{
     testutils::{Address as _, Ledger, LedgerInfo},
@@ -456,4 +456,155 @@ fn initialize_requires_creator_auth() {
     let auths = env.auths();
     assert_eq!(auths.len(), 1);
     assert_eq!(auths[0].0, creator);
+}
+
+// ─── Issue #22: Milestone view functions ─────────────────────────────────────
+
+#[test]
+fn get_milestone_returns_correct_data() {
+    let now = 1_000;
+    let (env, client) = setup(now);
+    let creator = Address::generate(&env);
+    let goal_amount: i128 = 10_000;
+    let end_time = now + 1_000;
+    let accepted_assets = Vec::from_array(&env, [asset()]);
+
+    let desc_hash = BytesN::from_array(&env, &[1u8; 32]);
+    let mut milestones = Vec::new(&env);
+    milestones.push_back(MilestoneInput {
+        target_amount: 5_000,
+        description_hash: desc_hash.clone(),
+    });
+    milestones.push_back(MilestoneInput {
+        target_amount: goal_amount,
+        description_hash: BytesN::from_array(&env, &[2u8; 32]),
+    });
+
+    client.initialize(
+        &creator,
+        &goal_amount,
+        &end_time,
+        &accepted_assets,
+        &milestones,
+    );
+
+    let m0 = client.get_milestone(&0);
+    assert_eq!(m0.index, 0);
+    assert_eq!(m0.target_amount, 5_000);
+    assert_eq!(m0.description_hash, desc_hash);
+    assert_eq!(m0.status, MilestoneStatus::Locked);
+    assert!(m0.released_at.is_none());
+
+    let m1 = client.get_milestone(&1);
+    assert_eq!(m1.index, 1);
+    assert_eq!(m1.target_amount, goal_amount);
+    assert_eq!(m1.status, MilestoneStatus::Locked);
+}
+
+#[test]
+#[should_panic(expected = "MilestoneNotFound")]
+fn get_milestone_out_of_range_panics() {
+    let now = 1_000;
+    let (env, client) = setup(now);
+    let creator = Address::generate(&env);
+    let goal_amount: i128 = 10_000;
+    let end_time = now + 1_000;
+    let accepted_assets = Vec::from_array(&env, [asset()]);
+    let milestones = ascending_milestones(&env, goal_amount);
+
+    client.initialize(
+        &creator,
+        &goal_amount,
+        &end_time,
+        &accepted_assets,
+        &milestones,
+    );
+
+    client.get_milestone(&2);
+}
+
+#[test]
+fn get_all_milestones_returns_all_in_order() {
+    let now = 1_000;
+    let (env, client) = setup(now);
+    let creator = Address::generate(&env);
+    let goal_amount: i128 = 10_000;
+    let end_time = now + 1_000;
+    let accepted_assets = Vec::from_array(&env, [asset()]);
+    let milestones = ascending_milestones(&env, goal_amount);
+
+    client.initialize(
+        &creator,
+        &goal_amount,
+        &end_time,
+        &accepted_assets,
+        &milestones,
+    );
+
+    let all = client.get_all_milestones();
+    assert_eq!(all.len(), 2);
+    assert_eq!(all.get_unchecked(0).target_amount, goal_amount / 2);
+    assert_eq!(all.get_unchecked(1).target_amount, goal_amount);
+    assert_eq!(all.get_unchecked(0).status, MilestoneStatus::Locked);
+    assert_eq!(all.get_unchecked(1).status, MilestoneStatus::Locked);
+}
+
+#[test]
+fn get_all_milestones_with_single_milestone() {
+    let now = 1_000;
+    let (env, client) = setup(now);
+    let creator = Address::generate(&env);
+    let goal_amount: i128 = 10_000;
+    let end_time = now + 1_000;
+    let accepted_assets = Vec::from_array(&env, [asset()]);
+    let mut milestones = Vec::new(&env);
+    milestones.push_back(MilestoneInput {
+        target_amount: goal_amount,
+        description_hash: BytesN::from_array(&env, &[0u8; 32]),
+    });
+
+    client.initialize(
+        &creator,
+        &goal_amount,
+        &end_time,
+        &accepted_assets,
+        &milestones,
+    );
+
+    let all = client.get_all_milestones();
+    assert_eq!(all.len(), 1);
+    assert_eq!(all.get_unchecked(0).target_amount, goal_amount);
+}
+
+#[test]
+fn get_all_milestones_with_five_milestones() {
+    let now = 1_000;
+    let (env, client) = setup(now);
+    let creator = Address::generate(&env);
+    let goal_amount: i128 = 25_000;
+    let end_time = now + 1_000;
+    let accepted_assets = Vec::from_array(&env, [asset()]);
+
+    let mut milestones = Vec::new(&env);
+    for i in 1..=5 {
+        milestones.push_back(MilestoneInput {
+            target_amount: i * 5_000,
+            description_hash: BytesN::from_array(&env, &[i as u8; 32]),
+        });
+    }
+
+    client.initialize(
+        &creator,
+        &goal_amount,
+        &end_time,
+        &accepted_assets,
+        &milestones,
+    );
+
+    let all = client.get_all_milestones();
+    assert_eq!(all.len(), 5);
+    for i in 0..5 {
+        assert_eq!(all.get_unchecked(i).target_amount, (i as i128 + 1) * 5_000);
+        assert_eq!(all.get_unchecked(i).index, i as u32);
+    }
 }
