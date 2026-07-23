@@ -608,3 +608,168 @@ fn get_all_milestones_with_five_milestones() {
         assert_eq!(all.get_unchecked(i).index, i as u32);
     }
 }
+
+// ─── Issue #20: Post-donation state updates ─────────────────────────────────
+
+#[test]
+fn donation_unlocks_milestone_when_target_met() {
+    let now = 1_000;
+    let end_time = 2_000;
+    let (env, _contract_id, client, donor, asset) = setup_donation_campaign(now, end_time);
+
+    client.donate(&donor, &5_000, &asset);
+
+    let m0 = client.get_milestone(&0);
+    assert_eq!(m0.status, MilestoneStatus::Unlocked);
+    let m1 = client.get_milestone(&1);
+    assert_eq!(m1.status, MilestoneStatus::Locked);
+}
+
+#[test]
+fn donation_unlocks_multiple_milestones_in_one_shot() {
+    let now = 1_000;
+    let end_time = 2_000;
+    let (env, _contract_id, client, donor, asset) = setup_donation_campaign(now, end_time);
+
+    client.donate(&donor, &10_000, &asset);
+
+    let m0 = client.get_milestone(&0);
+    assert_eq!(m0.status, MilestoneStatus::Unlocked);
+    let m1 = client.get_milestone(&1);
+    assert_eq!(m1.status, MilestoneStatus::Unlocked);
+}
+
+#[test]
+fn donation_unlocks_three_milestones_in_one_shot() {
+    let now = 1_000;
+    let end_time = 2_000;
+    let (env, _contract_id, client, donor, asset) = setup_donation_campaign(now, end_time);
+
+    let env2 = Env::default();
+    env2.ledger().set(LedgerInfo {
+        timestamp: now,
+        protocol_version: 20,
+        sequence_number: 1,
+        network_id: Default::default(),
+        base_reserve: 10,
+        min_temp_entry_ttl: 16,
+        min_persistent_entry_ttl: 16,
+        max_entry_ttl: 6_312_000,
+    });
+    env2.mock_all_auths();
+
+    let client2 = CampaignContractClient::new(
+        &env2,
+        &env2.register_contract(None, CampaignContract),
+    );
+    let creator2 = Address::generate(&env2);
+    let donor2 = Address::generate(&env2);
+    let token_admin2 = Address::generate(&env2);
+    let token_address2 = env2.register_stellar_asset_contract(token_admin2.clone());
+    let asset2 = AssetInfo::Token(token_address2.clone());
+    let goal_amount2: i128 = 10_000;
+
+    let mut milestones2 = Vec::new(&env2);
+    milestones2.push_back(MilestoneInput {
+        target_amount: 2_000,
+        description_hash: BytesN::from_array(&env2, &[0u8; 32]),
+    });
+    milestones2.push_back(MilestoneInput {
+        target_amount: 5_000,
+        description_hash: BytesN::from_array(&env2, &[1u8; 32]),
+    });
+    milestones2.push_back(MilestoneInput {
+        target_amount: goal_amount2,
+        description_hash: BytesN::from_array(&env2, &[2u8; 32]),
+    });
+
+    soroban_sdk::token::StellarAssetClient::new(&env2, &token_address2)
+        .mint(&donor2, &10_000);
+    client2.initialize(
+        &creator2,
+        &goal_amount2,
+        &end_time,
+        &Vec::from_array(&env2, [asset2.clone()]),
+        &milestones2,
+    );
+
+    client2.donate(&donor2, &10_000, &asset2);
+
+    let all = client2.get_all_milestones();
+    assert_eq!(all.len(), 3);
+    for i in 0..3 {
+        assert_eq!(all.get_unchecked(i).status, MilestoneStatus::Unlocked);
+    }
+}
+
+#[test]
+fn donation_triggers_goal_reached_transition() {
+    let now = 1_000;
+    let end_time = 2_000;
+    let (env, _contract_id, client, donor, asset) = setup_donation_campaign(now, end_time);
+
+    client.donate(&donor, &10_000, &asset);
+
+    let data = client.get_campaign_info();
+    assert_eq!(data.status, CampaignStatus::GoalReached);
+    assert_eq!(data.raised_amount, 10_000);
+}
+
+#[test]
+fn donation_does_not_re_fire_already_unlocked_milestones() {
+    let now = 1_000;
+    let end_time = 2_000;
+    let (env, _contract_id, client, donor, asset) = setup_donation_campaign(now, end_time);
+
+    client.donate(&donor, &5_000, &asset);
+    assert_eq!(
+        client.get_milestone(&0).status,
+        MilestoneStatus::Unlocked
+    );
+
+    client.donate(&donor, &1_000, &asset);
+    assert_eq!(
+        client.get_milestone(&0).status,
+        MilestoneStatus::Unlocked
+    );
+    assert_eq!(
+        client.get_milestone(&1).status,
+        MilestoneStatus::Locked
+    );
+}
+
+#[test]
+fn donations_continue_after_goal_reached() {
+    let now = 1_000;
+    let end_time = 2_000;
+    let (env, _contract_id, client, donor, asset) = setup_donation_campaign(now, end_time);
+
+    client.donate(&donor, &10_000, &asset);
+    assert_eq!(
+        client.get_campaign_info().status,
+        CampaignStatus::GoalReached
+    );
+
+    client.donate(&donor, &5_000, &asset);
+    let data = client.get_campaign_info();
+    assert_eq!(data.status, CampaignStatus::GoalReached);
+    assert_eq!(data.raised_amount, 15_000);
+}
+
+#[test]
+fn donation_exactly_at_milestone_boundary_unlocks_it() {
+    let now = 1_000;
+    let end_time = 2_000;
+    let (env, _contract_id, client, donor, asset) = setup_donation_campaign(now, end_time);
+
+    client.donate(&donor, &5_000, &asset);
+
+    assert_eq!(
+        client.get_milestone(&0).status,
+        MilestoneStatus::Unlocked
+    );
+    assert_eq!(
+        client.get_milestone(&1).status,
+        MilestoneStatus::Locked
+    );
+}
