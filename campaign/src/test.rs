@@ -174,7 +174,7 @@ fn zero_goal_amount_fails() {
     let accepted_assets = Vec::from_array(&env, [asset()]);
     let milestones = ascending_milestones(&env, 0);
 
-    let result = client.try_initialize(&creator, &0, &end_time, &accepted_assets, &milestones);
+    let result = client.try_initialize(&creator, &0, &end_time, &accepted_assets, &milestones, &0);
     assert_eq!(result, Err(Ok(Error::InvalidGoalAmount)));
 }
 
@@ -193,6 +193,7 @@ fn past_end_time_fails() {
         &(now - 1),
         &accepted_assets,
         &milestones,
+        &0,
     );
     assert_eq!(result, Err(Ok(Error::InvalidEndTime)));
 }
