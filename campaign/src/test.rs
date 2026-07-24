@@ -76,6 +76,7 @@ fn setup_donation_campaign(
         &end_time,
         &accepted_assets,
         &milestones,
+        &0, // min donation disabled
     );
 
     (env, contract_id, client, donor, asset)
