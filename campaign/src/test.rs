@@ -208,7 +208,7 @@ fn end_time_equal_to_now_fails() {
     let accepted_assets = Vec::from_array(&env, [asset()]);
     let milestones = ascending_milestones(&env, goal_amount);
 
-    let result = client.try_initialize(&creator, &goal_amount, &now, &accepted_assets, &milestones);
+    let result = client.try_initialize(&creator, &goal_amount, &now, &accepted_assets, &milestones, &0);
     assert_eq!(result, Err(Ok(Error::InvalidEndTime)));
 }
 
