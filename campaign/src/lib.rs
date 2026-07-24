@@ -41,6 +41,7 @@ pub enum DataKey {
     Admin,
     Frozen,
     XlmTokenAddress,
+    MinDonationAmount,
 }
 
 #[contracttype]
