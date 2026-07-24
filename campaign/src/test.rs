@@ -228,6 +228,7 @@ fn no_accepted_assets_fails() {
         &end_time,
         &accepted_assets,
         &milestones,
+        &0,
     );
     assert_eq!(result, Err(Ok(Error::NoAcceptedAssets)));
 }
