@@ -142,6 +142,7 @@ fn reinitialize_with_different_params_fails() {
         &end_time,
         &accepted_assets,
         &milestones,
+        &0, // min donation disabled
     );
 
     let other_creator = Address::generate(&env);
@@ -320,6 +321,7 @@ fn single_milestone_equal_to_goal_succeeds() {
         &end_time,
         &accepted_assets,
         &milestones,
+        &0, // min donation disabled
     );
 
     let data = client.get_campaign_info();
