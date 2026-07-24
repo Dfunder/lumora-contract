@@ -526,6 +526,7 @@ fn get_milestone_out_of_range_panics() {
         &end_time,
         &accepted_assets,
         &milestones,
+        &0, // min donation disabled
     );
 
     client.get_milestone(&2);
