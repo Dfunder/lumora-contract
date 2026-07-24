@@ -246,10 +246,7 @@ impl CampaignContract {
     }
 
     pub fn get_min_donation_amount(env: Env) -> i128 {
-        env.storage()
-            .persistent()
-            .get(&DataKey::MinDonationAmount)
-            .unwrap_or(0)
+        storage::get_min_donation_amount(&env).unwrap_or(0)
     }
 
     pub fn require_creator(env: Env) {
