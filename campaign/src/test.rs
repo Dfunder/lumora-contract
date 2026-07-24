@@ -113,6 +113,7 @@ fn initialize_with_valid_parameters_succeeds() {
         &end_time,
         &accepted_assets,
         &milestones,
+        &0,
     );
 
     let data = client.get_campaign_info();
@@ -154,6 +155,7 @@ fn reinitialize_with_different_params_fails() {
         &other_end_time,
         &accepted_assets,
         &other_milestones,
+        &0,
     );
     assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
 
