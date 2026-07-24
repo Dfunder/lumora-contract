@@ -253,6 +253,7 @@ fn non_ascending_milestones_fails() {
         &end_time,
         &accepted_assets,
         &milestones,
+        &0,
     );
     assert_eq!(result, Err(Ok(Error::InvalidMilestones)));
 }
