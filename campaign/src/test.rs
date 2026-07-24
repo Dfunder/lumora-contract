@@ -302,6 +302,7 @@ fn final_milestone_not_equal_to_goal_fails() {
         &end_time,
         &accepted_assets,
         &milestones,
+        &0,
     );
     assert_eq!(result, Err(Ok(Error::InvalidMilestones)));
 }
