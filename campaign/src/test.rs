@@ -777,3 +777,161 @@ fn donation_exactly_at_milestone_boundary_unlocks_it() {
         MilestoneStatus::Locked
     );
 }
+
+// ─── min_donation_amount functionality tests ───────────────────────────────
+
+#[test]
+fn donation_exactly_at_minimum_succeeds() {
+    let now = 1_000;
+    let end_time = 2_000;
+    let min_donation: i128 = 100;
+    
+    let (env, contract_id, client) = setup_with_contract(now);
+    let creator = Address::generate(&env);
+    let donor = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_address = env.register_stellar_asset_contract(token_admin.clone());
+    let asset = AssetInfo::Token(token_address.clone());
+    let accepted_assets = Vec::from_array(&env, [asset.clone()]);
+    let goal_amount = 10_000;
+    let milestones = ascending_milestones(&env, goal_amount);
+
+    soroban_sdk::token::StellarAssetClient::new(&env, &token_address).mint(&donor, &10_000);
+    client.initialize(
+        &creator,
+        &goal_amount,
+        &end_time,
+        &accepted_assets,
+        &milestones,
+        &min_donation,
+    );
+
+    // Donate exactly the minimum - should succeed
+    client.donate(&donor, &min_donation, &asset);
+    
+    let token = soroban_sdk::token::TokenClient::new(&env, &token_address);
+    assert_eq!(token.balance(&donor), 9900);
+    assert_eq!(token.balance(&contract_id), 100);
+    assert_eq!(client.get_campaign_info().raised_amount, 100);
+}
+
+#[test]
+#[should_panic(expected = "DonationTooSmall")]
+fn donation_one_unit_below_minimum_panics() {
+    let now = 1_000;
+    let end_time = 2_000;
+    let min_donation: i128 = 100;
+    
+    let (env, _contract_id, client) = setup_with_contract(now);
+    let creator = Address::generate(&env);
+    let donor = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_address = env.register_stellar_asset_contract(token_admin.clone());
+    let asset = AssetInfo::Token(token_address.clone());
+    let accepted_assets = Vec::from_array(&env, [asset.clone()]);
+    let goal_amount = 10_000;
+    let milestones = ascending_milestones(&env, goal_amount);
+
+    soroban_sdk::token::StellarAssetClient::new(&env, &token_address).mint(&donor, &10_000);
+    client.initialize(
+        &creator,
+        &goal_amount,
+        &end_time,
+        &accepted_assets,
+        &milestones,
+        &min_donation,
+    );
+
+    // Donate 1 unit below minimum - should panic
+    client.donate(&donor, &(min_donation - 1), &asset);
+}
+
+#[test]
+fn min_donation_zero_allows_dust_donations() {
+    let now = 1_000;
+    let end_time = 2_000;
+    let min_donation: i128 = 0; // min donation disabled
+    
+    let (env, contract_id, client) = setup_with_contract(now);
+    let creator = Address::generate(&env);
+    let donor = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_address = env.register_stellar_asset_contract(token_admin.clone());
+    let asset = AssetInfo::Token(token_address.clone());
+    let accepted_assets = Vec::from_array(&env, [asset.clone()]);
+    let goal_amount = 10_000;
+    let milestones = ascending_milestones(&env, goal_amount);
+
+    soroban_sdk::token::StellarAssetClient::new(&env, &token_address).mint(&donor, &10_000);
+    client.initialize(
+        &creator,
+        &goal_amount,
+        &end_time,
+        &accepted_assets,
+        &milestones,
+        &min_donation,
+    );
+
+    // Dust donation of 1 unit - should succeed when min is 0
+    client.donate(&donor, &1, &asset);
+    
+    let token = soroban_sdk::token::TokenClient::new(&env, &token_address);
+    assert_eq!(token.balance(&donor), 9999);
+    assert_eq!(token.balance(&contract_id), 1);
+    assert_eq!(client.get_campaign_info().raised_amount, 1);
+}
+
+#[test]
+fn get_min_donation_amount_returns_correct_value() {
+    let now = 1_000;
+    let end_time = 2_000;
+    let min_donation: i128 = 500;
+    
+    let (env, _contract_id, client) = setup_with_contract(now);
+    let creator = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_address = env.register_stellar_asset_contract(token_admin.clone());
+    let asset = AssetInfo::Token(token_address.clone());
+    let accepted_assets = Vec::from_array(&env, [asset.clone()]);
+    let goal_amount = 10_000;
+    let milestones = ascending_milestones(&env, goal_amount);
+
+    client.initialize(
+        &creator,
+        &goal_amount,
+        &end_time,
+        &accepted_assets,
+        &milestones,
+        &min_donation,
+    );
+
+    // Verify the getter returns the correct minimum
+    assert_eq!(client.get_min_donation_amount(), min_donation);
+}
+
+#[test]
+fn negative_min_donation_amount_fails_initialization() {
+    let now = 1_000;
+    let end_time = 2_000;
+    let min_donation: i128 = -100; // Invalid negative amount
+    
+    let (env, _contract_id, client) = setup_with_contract(now);
+    let creator = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_address = env.register_stellar_asset_contract(token_admin.clone());
+    let asset = AssetInfo::Token(token_address.clone());
+    let accepted_assets = Vec::from_array(&env, [asset.clone()]);
+    let goal_amount = 10_000;
+    let milestones = ascending_milestones(&env, goal_amount);
+
+    let result = client.try_initialize(
+        &creator,
+        &goal_amount,
+        &end_time,
+        &accepted_assets,
+        &milestones,
+        &min_donation,
+    );
+    
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+}
