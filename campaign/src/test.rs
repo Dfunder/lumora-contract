@@ -454,6 +454,7 @@ fn initialize_requires_creator_auth() {
         &end_time,
         &accepted_assets,
         &milestones,
+        &0, // min donation disabled
     );
 
     // `setup` mocks all auths, so the call above succeeds regardless of who
@@ -492,6 +493,7 @@ fn get_milestone_returns_correct_data() {
         &end_time,
         &accepted_assets,
         &milestones,
+        &0, // min donation disabled
     );
 
     let m0 = client.get_milestone(&0);
