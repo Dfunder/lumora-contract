@@ -207,9 +207,7 @@ impl CampaignContract {
         }
 
         // Store min donation amount
-        env.storage()
-            .persistent()
-            .set(&DataKey::MinDonationAmount, &min_donation_amount);
+        storage::set_min_donation_amount(&env, &min_donation_amount);
 
         let campaign_data = CampaignData {
             creator: creator.clone(),
