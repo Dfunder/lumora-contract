@@ -25,6 +25,7 @@ pub enum Error {
     CampaignCancelled = 11,
     DonationFailed = 12,
     MilestoneNotFound = 13,
+    DonationTooSmall = 14,
 }
 
 #[contracttype]
