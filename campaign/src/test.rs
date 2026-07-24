@@ -548,6 +548,7 @@ fn get_all_milestones_returns_all_in_order() {
         &end_time,
         &accepted_assets,
         &milestones,
+        &0, // min donation disabled
     );
 
     let all = client.get_all_milestones();
