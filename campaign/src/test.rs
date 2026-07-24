@@ -829,8 +829,7 @@ fn donation_exactly_at_minimum_succeeds() {
 }
 
 #[test]
-#[should_panic(expected = "DonationTooSmall")]
-fn donation_one_unit_below_minimum_panics() {
+fn donation_one_unit_below_minimum_fails() {
     let now = 1_000;
     let end_time = 2_000;
     let min_donation: i128 = 100;
@@ -855,8 +854,9 @@ fn donation_one_unit_below_minimum_panics() {
         &min_donation,
     );
 
-    // Donate 1 unit below minimum - should panic
-    client.donate(&donor, &(min_donation - 1), &asset);
+    // Donate 1 unit below minimum - should return DonationTooSmall error
+    let result = client.try_donate(&donor, &(min_donation - 1), &asset);
+    assert_eq!(result, Err(Ok(Error::DonationTooSmall)));
 }
 
 #[test]

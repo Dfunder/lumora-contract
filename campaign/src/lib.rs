@@ -283,7 +283,7 @@ impl CampaignContract {
 
         let min_donation = Self::get_min_donation_amount(env.clone());
         if min_donation > 0 && amount < min_donation {
-            panic!("DonationTooSmall");
+            return Err(Error::DonationTooSmall);
         }
 
         let mut data = expect_campaign_data(&env);
