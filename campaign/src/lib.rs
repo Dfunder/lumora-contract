@@ -286,6 +286,11 @@ impl CampaignContract {
             panic!("amount must be positive");
         }
 
+        let min_donation = Self::get_min_donation_amount(env.clone());
+        if min_donation > 0 && amount < min_donation {
+            panic!("DonationTooSmall");
+        }
+
         let mut data = expect_campaign_data(&env);
 
         if env.ledger().timestamp() > data.end_time {

@@ -127,3 +127,13 @@ pub fn set_xlm_token(env: &Env, address: &Address) {
 pub fn get_xlm_token(env: &Env) -> Option<Address> {
     env.storage().persistent().get(&DataKey::XlmTokenAddress)
 }
+
+pub fn set_min_donation_amount(env: &Env, amount: &i128) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::MinDonationAmount, amount);
+}
+
+pub fn get_min_donation_amount(env: &Env) -> Option<i128> {
+    env.storage().persistent().get(&DataKey::MinDonationAmount)
+}
