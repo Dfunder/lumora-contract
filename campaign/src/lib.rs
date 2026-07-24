@@ -164,6 +164,7 @@ impl CampaignContract {
         end_time: u64,
         accepted_assets: Vec<AssetInfo>,
         milestones: Vec<MilestoneInput>,
+        min_donation_amount: i128,
     ) -> Result<(), Error> {
         creator.require_auth();
 
@@ -183,6 +184,10 @@ impl CampaignContract {
             return Err(Error::NoAcceptedAssets);
         }
 
+        if min_donation_amount < 0 {
+            return Err(Error::InvalidAmount);
+        }
+
         let milestone_count = milestones.len();
         if milestone_count == 0 || milestone_count > MAX_MILESTONES {
             return Err(Error::InvalidMilestones);
@@ -200,6 +205,11 @@ impl CampaignContract {
         if milestones.get_unchecked(milestone_count - 1).target_amount != goal_amount {
             return Err(Error::InvalidMilestones);
         }
+
+        // Store min donation amount
+        env.storage()
+            .persistent()
+            .set(&DataKey::MinDonationAmount, &min_donation_amount);
 
         let campaign_data = CampaignData {
             creator: creator.clone(),
@@ -235,6 +245,13 @@ impl CampaignContract {
 
     pub fn get_campaign_info(env: Env) -> CampaignData {
         expect_campaign_data(&env)
+    }
+
+    pub fn get_min_donation_amount(env: Env) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::MinDonationAmount)
+            .unwrap_or(0)
     }
 
     pub fn require_creator(env: Env) {
