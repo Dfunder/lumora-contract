@@ -1,0 +1,49 @@
+# Helm values for the CloudNativePG operator
+# Chart: https://cloudnative-pg.github.io/charts
+# Install:
+#   helm repo add cnpg https://cloudnative-pg.github.io/charts
+#   helm repo update
+#   helm upgrade --install cnpg cnpg/cloudnative-pg \
+#     --namespace cnpg-system --create-namespace \
+#     -f deployments/postgres/helm/cnpg-operator-values.yaml
+
+replicaCount: 2   # HA operator — 2 replicas with leader election
+
+image:
+  repository: ghcr.io/cloudnative-pg/cloudnative-pg
+  tag: "1.23.2"
+  pullPolicy: IfNotPresent
+
+resources:
+  requests:
+    memory: "64Mi"
+    cpu: "100m"
+  limits:
+    memory: "256Mi"
+    cpu: "500m"
+
+# Prometheus ServiceMonitor
+monitoring:
+  podMonitorEnabled: true
+  grafanaDashboard:
+    create: true
+    namespace: monitoring   # namespace where Grafana is deployed
+
+# Webhook — TLS managed automatically by cert-manager if installed
+webhook:
+  port: 9443
+
+# Leader election
+leaderElection:
+  enabled: true
+
+# Tolerations / node affinity (adjust for your cluster)
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Operator-level configuration overrides
+config:
+  data:
+    # Reduce default failover time to satisfy the ≤10 s acceptance criterion
+    ENABLE_INSTANCE_MANAGER_INPLACE_UPDATES: "true"

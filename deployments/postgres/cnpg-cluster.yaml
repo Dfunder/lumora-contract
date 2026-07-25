@@ -1,0 +1,160 @@
+---
+# CloudNativePG Cluster — lumora-pg
+# 1 primary + 2 synchronous streaming replicas
+# WAL archiving → MinIO (S3-compatible) for PITR
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: lumora-pg
+  namespace: lumora-db
+  labels:
+    app.kubernetes.io/name: lumora-pg
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: lumora
+spec:
+  # ── Replica topology ────────────────────────────────────────────────────────
+  instances: 3
+
+  # PostgreSQL configuration
+  postgresql:
+    parameters:
+      max_connections: "200"
+      shared_buffers: "256MB"
+      effective_cache_size: "768MB"
+      maintenance_work_mem: "64MB"
+      checkpoint_completion_target: "0.9"
+      wal_buffers: "16MB"
+      default_statistics_target: "100"
+      random_page_cost: "1.1"
+      effective_io_concurrency: "200"
+      work_mem: "1310kB"
+      min_wal_size: "1GB"
+      max_wal_size: "4GB"
+      max_worker_processes: "4"
+      max_parallel_workers_per_gather: "2"
+      max_parallel_workers: "4"
+      max_parallel_maintenance_workers: "2"
+      # Logging
+      log_min_duration_statement: "1000"
+      log_checkpoints: "on"
+      log_connections: "off"
+      log_disconnections: "off"
+      log_lock_waits: "on"
+      log_temp_files: "0"
+      # Replication
+      synchronous_commit: "remote_write"
+      wal_level: "replica"
+      hot_standby: "on"
+      hot_standby_feedback: "on"
+
+  # ── Bootstrap ───────────────────────────────────────────────────────────────
+  bootstrap:
+    initdb:
+      database: lumora
+      owner: lumora_app
+      secret:
+        name: lumora-pg-app-secret
+      encoding: UTF8
+      localeCollate: en_US.UTF-8
+      localeCType: en_US.UTF-8
+      postInitSQL:
+        - CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+        - CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+  # ── Superuser credentials ────────────────────────────────────────────────────
+  superuserSecret:
+    name: lumora-pg-superuser-secret
+
+  # ── Storage ─────────────────────────────────────────────────────────────────
+  storage:
+    size: 20Gi
+    storageClass: standard  # override with fast SSD class in production
+
+  walStorage:
+    size: 5Gi
+    storageClass: standard
+
+  # ── Backup / WAL archiving (MinIO) ───────────────────────────────────────────
+  backup:
+    retentionPolicy: "14d"
+    barmanObjectStore:
+      destinationPath: "s3://lumora-wal/backups"
+      endpointURL: "http://minio.lumora-db.svc.cluster.local:9000"
+      s3Credentials:
+        accessKeyId:
+          name: minio-s3-secret
+          key: ACCESS_KEY_ID
+        secretAccessKey:
+          name: minio-s3-secret
+          key: SECRET_ACCESS_KEY
+      wal:
+        compression: gzip
+        maxParallel: 8
+      data:
+        compression: gzip
+        immediateCheckpoint: false
+        jobs: 2
+
+  # ── Scheduled base backup ────────────────────────────────────────────────────
+  # A ScheduledBackup object is defined separately (cnpg-scheduled-backup.yaml)
+
+  # ── Monitoring ──────────────────────────────────────────────────────────────
+  monitoring:
+    enablePodMonitor: true   # requires Prometheus Operator CRD
+
+  # ── Resource requests/limits ─────────────────────────────────────────────────
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "500m"
+    limits:
+      memory: "1Gi"
+      cpu: "1000m"
+
+  # ── Affinity — spread replicas across nodes ──────────────────────────────────
+  affinity:
+    enablePodAntiAffinity: true
+    topologyKey: kubernetes.io/hostname
+    podAntiAffinityType: preferred
+
+  # ── Primary failover ─────────────────────────────────────────────────────────
+  # CloudNativePG promotes a healthy standby within ~10 s by default.
+  # Tune switchoverDelay and failoverDelay if your storage/network is slower.
+  failoverDelay: 0    # seconds — promote immediately when primary is unhealthy
+
+---
+# Scheduled daily base backup at 02:00 UTC
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: lumora-pg-daily
+  namespace: lumora-db
+spec:
+  schedule: "0 2 * * *"   # cron: every day at 02:00 UTC
+  backupOwnerReference: self
+  cluster:
+    name: lumora-pg
+
+---
+# Application user secret (base64-encoded values — replace before applying)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: lumora-pg-app-secret
+  namespace: lumora-db
+type: kubernetes.io/basic-auth
+stringData:
+  username: lumora_app
+  password: CHANGE_ME_APP_PASSWORD   # use a secrets manager / sealed-secret in production
+
+---
+# Superuser secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: lumora-pg-superuser-secret
+  namespace: lumora-db
+type: kubernetes.io/basic-auth
+stringData:
+  username: postgres
+  password: CHANGE_ME_SUPERUSER_PASSWORD   # use a secrets manager / sealed-secret in production
