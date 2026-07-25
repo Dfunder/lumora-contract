@@ -1,0 +1,88 @@
+# Helm values for PgBouncer
+# Chart: https://helm.sh/docs/  (using groundhog2k/pgbouncer or similar community chart)
+# Or deploy the raw manifest at deployments/postgres/pgbouncer.yaml directly.
+#
+# Example with the groundhog2k chart:
+#   helm repo add groundhog2k https://groundhog2k.github.io/helm-charts
+#   helm repo update
+#   helm upgrade --install pgbouncer groundhog2k/pgbouncer \
+#     --namespace lumora-db --create-namespace \
+#     -f deployments/postgres/helm/pgbouncer-values.yaml
+
+replicaCount: 2
+
+image:
+  repository: pgbouncer/pgbouncer
+  tag: "1.22.1"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 5432
+
+# PgBouncer ini settings (mirrors pgbouncer.yaml ConfigMap)
+config:
+  databases:
+    lumora:
+      host: lumora-pg-rw.lumora-db.svc.cluster.local
+      port: 5432
+      dbname: lumora
+    lumora_ro:
+      host: lumora-pg-ro.lumora-db.svc.cluster.local
+      port: 5432
+      dbname: lumora
+
+  pgbouncer:
+    pool_mode: transaction
+    max_client_conn: 2000
+    default_pool_size: 25
+    min_pool_size: 5
+    reserve_pool_size: 5
+    reserve_pool_timeout: 3
+    auth_type: scram-sha-256
+    server_connect_timeout: 10
+    server_idle_timeout: 600
+    query_wait_timeout: 120
+    log_connections: 0
+    log_disconnections: 0
+    log_pooler_errors: 1
+    stats_period: 60
+
+# Existing secret created by CloudNativePG for the app user
+existingSecret:
+  name: lumora-pg-app-secret
+  usernameKey: username
+  passwordKey: password
+
+resources:
+  requests:
+    memory: "64Mi"
+    cpu: "100m"
+  limits:
+    memory: "256Mi"
+    cpu: "500m"
+
+# Pod anti-affinity — spread across nodes
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: pgbouncer
+          topologyKey: kubernetes.io/hostname
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Prometheus metrics sidecar
+metrics:
+  enabled: true
+  image:
+    repository: prometheuscommunity/pgbouncer-exporter
+    tag: "v0.7.0"
+  serviceMonitor:
+    enabled: true
+    namespace: monitoring
