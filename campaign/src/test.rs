@@ -1,6 +1,6 @@
 use super::{
     storage, AssetInfo, CampaignContract, CampaignContractClient, CampaignStatus, Error,
-    MilestoneData, MilestoneInput, MilestoneStatus,
+    MilestoneInput, MilestoneStatus,
 };
 use soroban_sdk::{
     testutils::{Address as _, Ledger, LedgerInfo},
@@ -616,6 +616,7 @@ fn get_all_milestones_with_five_milestones() {
         &end_time,
         &accepted_assets,
         &milestones,
+        &0,
     );
 
     let all = client.get_all_milestones();
@@ -708,6 +709,7 @@ fn donation_unlocks_three_milestones_in_one_shot() {
         &end_time,
         &Vec::from_array(&env2, [asset2.clone()]),
         &milestones2,
+        &0,
     );
 
     client2.donate(&donor2, &10_000, &asset2);
