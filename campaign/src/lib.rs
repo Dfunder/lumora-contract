@@ -334,7 +334,7 @@ impl CampaignContract {
 
         if goal_just_reached {
             env.events().publish(
-                (symbol_short!("goal_reach"),),
+                (symbol_short!("goal_rch"),),
                 (data.raised_amount, data.goal_amount),
             );
         }
