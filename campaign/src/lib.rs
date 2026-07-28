@@ -249,6 +249,22 @@ impl CampaignContract {
         storage::get_min_donation_amount(&env).unwrap_or(0)
     }
 
+    /// Returns the donor record for a given address.
+    /// Returns None for an address that has never donated
+    /// (instead of panicking).
+    pub fn get_donor_record(env: Env, donor: Address) -> Option<DonorRecord> {
+        storage::get_donor_data(&env, &donor)
+    }
+
+    /// Returns the total amount raised so far.
+    /// Returns 0 if the campaign hasn't been initialized or
+    /// no donations have been made yet.
+    pub fn get_total_raised(env: Env) -> i128 {
+        storage::get_campaign_data(&env)
+            .map(|data| data.raised_amount)
+            .unwrap_or(0)
+    }
+
     pub fn require_creator(env: Env) {
         let data = expect_campaign_data(&env);
         data.creator.require_auth();
