@@ -950,3 +950,101 @@ fn negative_min_donation_amount_fails_initialization() {
     
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
 }
+
+// ─── Issue #21: Donor and totals view functions ─────────────────────────────
+
+#[test]
+fn get_donor_record_never_donated_returns_none() {
+    let now = 1_000;
+    let end_time = 2_000;
+    let (env, _contract_id, client, donor, _asset) = setup_donation_campaign(now, end_time);
+
+    // Campaign donor address before they've donated
+    let record = client.get_donor_record(&donor);
+    assert!(record.is_none());
+
+    // Random stranger address
+    let stranger = Address::generate(&env);
+    let record = client.get_donor_record(&stranger);
+    assert!(record.is_none());
+}
+
+#[test]
+fn get_donor_record_after_donation_returns_correct_data() {
+    let now = 1_000;
+    let end_time = 2_000;
+    let (env, _contract_id, client, donor, asset) = setup_donation_campaign(now, end_time);
+
+    client.donate(&donor, &250, &asset);
+
+    let record = client.get_donor_record(&donor);
+    assert!(record.is_some());
+    let donor_record = record.unwrap();
+    assert_eq!(donor_record.donor, donor);
+    assert_eq!(donor_record.total_donated, 250);
+    assert_eq!(donor_record.per_asset.len(), 1);
+    assert_eq!(donor_record.per_asset.get_unchecked(0).asset, asset);
+    assert_eq!(donor_record.per_asset.get_unchecked(0).amount, 250);
+    assert!(donor_record.last_donation_time > 0);
+}
+
+#[test]
+fn get_donor_record_accumulates_multiple_donations() {
+    let now = 1_000;
+    let end_time = 2_000;
+    let (env, _contract_id, client, donor, asset) = setup_donation_campaign(now, end_time);
+
+    client.donate(&donor, &250, &asset);
+    client.donate(&donor, &750, &asset);
+
+    let record = client.get_donor_record(&donor);
+    assert!(record.is_some());
+    let donor_record = record.unwrap();
+    assert_eq!(donor_record.total_donated, 1000);
+    assert_eq!(donor_record.per_asset.len(), 1);
+    assert_eq!(donor_record.per_asset.get_unchecked(0).amount, 1000);
+}
+
+#[test]
+fn get_total_raised_zero_when_no_donations() {
+    let now = 1_000;
+    let end_time = 2_000;
+    let (_env, _contract_id, client, _donor, _asset) = setup_donation_campaign(now, end_time);
+
+    assert_eq!(client.get_total_raised(), 0);
+}
+
+#[test]
+fn get_total_raised_increases_after_donation() {
+    let now = 1_000;
+    let end_time = 2_000;
+    let (env, _contract_id, client, donor, asset) = setup_donation_campaign(now, end_time);
+
+    assert_eq!(client.get_total_raised(), 0);
+
+    client.donate(&donor, &250, &asset);
+    assert_eq!(client.get_total_raised(), 250);
+
+    client.donate(&donor, &750, &asset);
+    assert_eq!(client.get_total_raised(), 1000);
+}
+
+#[test]
+fn get_total_raised_returns_zero_before_initialization() {
+    let now = 1_000;
+    let (env, client) = setup(now);
+
+    // Before initialize, get_total_raised should return 0
+    assert_eq!(client.get_total_raised(), 0);
+}
+
+#[test]
+fn get_donor_record_none_before_initialization() {
+    let now = 1_000;
+    let (env, client) = setup(now);
+    let stranger = Address::generate(&env);
+
+    // Before initialize, get_donor_record should return None
+    let record = client.get_donor_record(&stranger);
+    assert!(record.is_none());
+}
