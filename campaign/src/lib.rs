@@ -26,6 +26,8 @@ pub enum Error {
     DonationFailed = 12,
     MilestoneNotFound = 13,
     DonationTooSmall = 14,
+    PreviousMilestoneNotReleased = 15,
+    MilestoneAlreadyReleased = 16,
 }
 
 #[contracttype]
@@ -87,6 +89,7 @@ pub struct CampaignData {
     pub status: CampaignStatus,
     pub accepted_assets: Vec<AssetInfo>,
     pub milestone_count: u32,
+    pub next_releasable_milestone: u32,
 }
 
 /// Creator-supplied milestone parameters accepted by `initialize`.
@@ -217,6 +220,7 @@ impl CampaignContract {
             status: CampaignStatus::Active,
             accepted_assets: accepted_assets.clone(),
             milestone_count,
+            next_releasable_milestone: 0,
         };
         storage::set_campaign_data(&env, &campaign_data);
 
@@ -240,6 +244,58 @@ impl CampaignContract {
 
         Ok(())
     }
+
+    pub fn release(env: Env, milestone_index: u32) -> Result<(), Error> {
+        let mut campaign_data = expect_campaign_data(&env);
+        campaign_data.creator.require_auth();
+
+        if milestone_index != campaign_data.next_releasable_milestone {
+            return Err(Error::PreviousMilestoneNotReleased);
+        }
+
+        let mut milestone = Self::get_milestone(env.clone(), milestone_index);
+        if milestone.status == MilestoneStatus::Released {
+            return Err(Error::MilestoneAlreadyReleased);
+        }
+
+        let total_raised = campaign_data.raised_amount;
+        let release_amount = milestone.target_amount;
+
+        for asset_info in campaign_data.accepted_assets.iter() {
+            let asset_raised = storage::get_raised_per_asset(&env, asset_info.clone()).unwrap_or(0);
+            if asset_raised > 0 {
+                let per_asset_release = (asset_raised as i128)
+                    .checked_mul(release_amount)
+                    .and_then(|v| v.checked_div(total_raised))
+                    .expect("overflow in per-asset release calculation");
+
+                if per_asset_release > 0 {
+                    let token_address = get_token_address(&env, &asset_info);
+                    let token_client = soroban_sdk::token::TokenClient::new(&env, &token_address);
+                    token_client.transfer(
+                        &env.current_contract_address(),
+                        &campaign_data.creator,
+                        &per_asset_release,
+                    );
+                }
+            }
+        }
+
+        milestone.status = MilestoneStatus::Released;
+        milestone.released_at = Some(env.ledger().timestamp());
+        storage::set_milestone_data(&env, milestone_index, &milestone);
+
+        campaign_data.next_releasable_milestone += 1;
+        storage::set_campaign_data(&env, &campaign_data);
+
+        env.events().publish(
+            (symbol_short!("released"),),
+            (milestone_index, release_amount),
+        );
+
+        Ok(())
+    }
+
 
     pub fn get_campaign_info(env: Env) -> CampaignData {
         expect_campaign_data(&env)
@@ -385,6 +441,10 @@ impl CampaignContract {
         }
 
         storage::set_donor_data(&env, &donor, &donor_record);
+
+        let total_asset_raised = storage::get_raised_per_asset(&env, asset.clone()).unwrap_or(0);
+        storage::set_raised_per_asset(&env, asset.clone(), total_asset_raised + amount);
+
 
         env.events().publish(
             (symbol_short!("donation"),),

@@ -658,6 +658,97 @@ fn donation_unlocks_multiple_milestones_in_one_shot() {
 }
 
 #[test]
+fn release_milestone_out_of_order_fails() {
+    let now = 1_000;
+    let end_time = 2_000;
+    let (env, _, client, donor, asset) = setup_donation_campaign(now, end_time);
+
+    client.donate(&donor, &10_000, &asset);
+
+    let result = client.try_release(&1);
+    assert_eq!(result, Err(Ok(Error::PreviousMilestoneNotReleased)));
+}
+
+#[test]
+fn release_already_released_milestone_fails() {
+    let now = 1_000;
+    let end_time = 2_000;
+    let (env, _, client, donor, asset) = setup_donation_campaign(now, end_time);
+
+    client.donate(&donor, &10_000, &asset);
+
+    client.release(&0);
+
+    let result = client.try_release(&0);
+    assert_eq!(result, Err(Ok(Error::MilestoneAlreadyReleased)));
+}
+
+#[test]
+fn release_milestone_proportional_split() {
+    let now = 1_000;
+    let (env, contract_id, client) = setup_with_contract(now);
+    let creator = Address::generate(&env);
+
+    let token_admin_1 = Address::generate(&env);
+    let token_address_1 = env.register_stellar_asset_contract(token_admin_1.clone());
+    let asset_1 = AssetInfo::Token(token_address_1.clone());
+
+    let token_admin_2 = Address::generate(&env);
+    let token_address_2 = env.register_stellar_asset_contract(token_admin_2.clone());
+    let asset_2 = AssetInfo::Token(token_address_2.clone());
+
+    let token_admin_3 = Address::generate(&env);
+    let token_address_3 = env.register_stellar_asset_contract(token_admin_3.clone());
+    let asset_3 = AssetInfo::Token(token_address_3.clone());
+
+    let accepted_assets = Vec::from_array(&env, [asset_1.clone(), asset_2.clone(), asset_3.clone()]);
+    let goal_amount = 10_000;
+    let milestones = ascending_milestones(&env, goal_amount);
+
+    client.initialize(
+        &creator,
+        &goal_amount,
+        &(now + 1000),
+        &accepted_assets,
+        &milestones,
+        &0,
+    );
+
+    let donor_1 = Address::generate(&env);
+    soroban_sdk::token::StellarAssetClient::new(&env, &token_address_1).mint(&donor_1, &5_000);
+    client.donate(&donor_1, &3_000, &asset_1);
+
+    let donor_2 = Address::generate(&env);
+    soroban_sdk::token::StellarAssetClient::new(&env, &token_address_2).mint(&donor_2, &5_000);
+    client.donate(&donor_2, &5_000, &asset_2);
+
+    let donor_3 = Address::generate(&env);
+    soroban_sdk::token::StellarAssetClient::new(&env, &token_address_3).mint(&donor_3, &5_000);
+    client.donate(&donor_3, &2_000, &asset_3);
+
+    client.release(&0);
+
+    let token_1_client = soroban_sdk::token::TokenClient::new(&env, &token_address_1);
+    let token_2_client = soroban_sdk::token::TokenClient::new(&env, &token_address_2);
+    let token_3_client = soroban_sdk::token::TokenClient::new(&env, &token_address_3);
+
+    // Raised: 3000, 5000, 2000. Total: 10000
+    // Milestone 1: 5000 (50% of goal)
+    // Expected release: 1500, 2500, 1000
+    assert_eq!(token_1_client.balance(&creator), 1_500);
+    assert_eq!(token_2_client.balance(&creator), 2_500);
+    assert_eq!(token_3_client.balance(&creator), 1_000);
+
+    // Remainder in contract: 1500, 2500, 1000
+    assert_eq!(token_1_client.balance(&contract_id), 1_500);
+    assert_eq!(token_2_client.balance(&contract_id), 2_500);
+    assert_eq!(token_3_client.balance(&contract_id), 1_000);
+}
+
+
+
+
+#[test]
 fn donation_unlocks_three_milestones_in_one_shot() {
     let now = 1_000;
     let end_time = 2_000;
