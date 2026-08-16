@@ -28,6 +28,7 @@ pub enum Error {
     DonationTooSmall = 14,
     PreviousMilestoneNotReleased = 15,
     MilestoneAlreadyReleased = 16,
+    MilestoneNotUnlocked = 17,
 }
 
 #[contracttype]
@@ -85,6 +86,7 @@ pub struct CampaignData {
     pub creator: Address,
     pub goal_amount: i128,
     pub raised_amount: i128,
+    pub released_amount: i128,
     pub end_time: u64,
     pub status: CampaignStatus,
     pub accepted_assets: Vec<AssetInfo>,
@@ -216,6 +218,7 @@ impl CampaignContract {
             creator: creator.clone(),
             goal_amount,
             raised_amount: 0,
+            released_amount: 0,
             end_time,
             status: CampaignStatus::Active,
             accepted_assets: accepted_assets.clone(),
@@ -245,7 +248,11 @@ impl CampaignContract {
         Ok(())
     }
 
-    pub fn release(env: Env, milestone_index: u32) -> Result<(), Error> {
+    pub fn release_milestone(
+        env: Env,
+        milestone_index: u32,
+        recipient: Address,
+    ) -> Result<(), Error> {
         let mut campaign_data = expect_campaign_data(&env);
         campaign_data.creator.require_auth();
 
@@ -257,9 +264,15 @@ impl CampaignContract {
         if milestone.status == MilestoneStatus::Released {
             return Err(Error::MilestoneAlreadyReleased);
         }
+        if milestone.status != MilestoneStatus::Unlocked {
+            return Err(Error::MilestoneNotUnlocked);
+        }
 
         let total_raised = campaign_data.raised_amount;
-        let release_amount = milestone.target_amount;
+        let release_amount = milestone
+            .target_amount
+            .checked_sub(campaign_data.released_amount)
+            .expect("overflow in release amount calculation");
 
         for asset_info in campaign_data.accepted_assets.iter() {
             let asset_raised = storage::get_raised_per_asset(&env, asset_info.clone()).unwrap_or(0);
@@ -272,10 +285,21 @@ impl CampaignContract {
                 if per_asset_release > 0 {
                     let token_address = get_token_address(&env, &asset_info);
                     let token_client = soroban_sdk::token::TokenClient::new(&env, &token_address);
+                    let tx_hash = BytesN::from_array(&env, &[0u8; 32]);
                     token_client.transfer(
                         &env.current_contract_address(),
-                        &campaign_data.creator,
+                        &recipient,
                         &per_asset_release,
+                    );
+                    env.events().publish(
+                        (symbol_short!("released"),),
+                        (
+                            milestone_index,
+                            per_asset_release,
+                            asset_info,
+                            recipient.clone(),
+                            tx_hash,
+                        ),
                     );
                 }
             }
@@ -285,13 +309,9 @@ impl CampaignContract {
         milestone.released_at = Some(env.ledger().timestamp());
         storage::set_milestone_data(&env, milestone_index, &milestone);
 
+        campaign_data.released_amount += release_amount;
         campaign_data.next_releasable_milestone += 1;
         storage::set_campaign_data(&env, &campaign_data);
-
-        env.events().publish(
-            (symbol_short!("released"),),
-            (milestone_index, release_amount),
-        );
 
         Ok(())
     }
