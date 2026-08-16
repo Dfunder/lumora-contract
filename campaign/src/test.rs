@@ -745,6 +745,34 @@ fn release_milestone_proportional_split() {
     assert_eq!(token_3_client.balance(&contract_id), 1_000);
 }
 
+#[test]
+fn release_milestone_succeeds() {
+    let now = 1_000;
+    let end_time = 2_000;
+    let (env, contract_id, client, donor, asset) = setup_donation_campaign(now, end_time);
+
+    // Donate enough to unlock the first milestone (target: 5_000)
+    client.donate(&donor, &5_000, &asset);
+
+    let recipient = Address::generate(&env);
+    let creator = client.get_campaign_info().creator;
+
+    client.with_auths(&[soroban_sdk::testutils::AddressAuth {
+        address: creator.clone(),
+        ..Default::default()
+    }])
+    .release_milestone(&0, &recipient);
+
+    let milestone = client.get_milestone(&0);
+    assert_eq!(milestone.status, MilestoneStatus::Released);
+    assert!(milestone.released_at.is_some());
+
+    // Verify token transfer to the recipient
+    let token_client = soroban_sdk::token::TokenClient::new(&env, &token_address(&asset));
+    assert_eq!(token_client.balance(&recipient), 5_000);
+    assert_eq!(token_client.balance(&contract_id), 0);
+}
+
 
 
 
