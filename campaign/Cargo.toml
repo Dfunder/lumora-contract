@@ -8,6 +8,8 @@ soroban-sdk = { workspace = true }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
+soroban-sdk-testing = { workspace = true }
+soroban-sdk-test-utils = { workspace = true }
 
 [lib]
 crate-type = ["cdylib"]
