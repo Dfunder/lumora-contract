@@ -56,15 +56,19 @@ pub enum ErrorCode {
     DonationFailed = 12,
     InvalidAddress = 13,
     InvalidTimestamp = 14,
+    ArithmeticOverflow = 15,
 }
 
 // ─── Utility Functions ───────────────────────────────────────────────────────
+
+/// Soroban's zero address, see https://github.com/stellar/rs-soroban-env/blob/main/soroban-env-host/src/host/primitives.rs#L1232
+const ZERO_ADDRESS_STR: &str = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWhf";
 
 /// Validates that an address is not the zero address.
 pub fn validate_address(env: &Env, address: &Address) -> Result<(), ErrorCode> {
     let zero_address = Address::from_string(&soroban_sdk::String::from_str(
         env,
-        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWhf",
+        ZERO_ADDRESS_STR,
     ));
     if *address == zero_address {
         return Err(ErrorCode::InvalidAddress);
@@ -88,6 +92,26 @@ pub fn validate_positive_amount(amount: i128) -> Result<(), ErrorCode> {
     Ok(())
 }
 
+/// Validates that an addition will not overflow.
+pub fn validate_add(a: i128, b: i128) -> Result<i128, ErrorCode> {
+    a.checked_add(b).ok_or(ErrorCode::ArithmeticOverflow)
+}
+
+/// Validates that a subtraction will not overflow.
+pub fn validate_sub(a: i128, b: i128) -> Result<i128, ErrorCode> {
+    a.checked_sub(b).ok_or(ErrorCode::ArithmeticOverflow)
+}
+
+/// Validates that a multiplication will not overflow.
+pub fn validate_mul(a: i128, b: i128) -> Result<i128, ErrorCode> {
+    a.checked_mul(b).ok_or(ErrorCode::ArithmeticOverflow)
+}
+
+/// Validates that a division will not result in a division by zero.
+pub fn validate_div(a: i128, b: i128) -> Result<i128, ErrorCode> {
+    a.checked_div(b).ok_or(ErrorCode::ArithmeticOverflow)
+}
+
 /// Returns the current ledger timestamp.
 pub fn current_timestamp(env: &Env) -> u64 {
     env.ledger().timestamp()
@@ -105,16 +129,10 @@ pub fn assets_equal(a: &AssetInfo, b: &AssetInfo) -> bool {
 
 /// Checks if an asset is in a list of accepted assets.
 pub fn is_asset_accepted(
-    env: &Env,
     accepted: &soroban_sdk::Vec<AssetInfo>,
     target: &AssetInfo,
 ) -> bool {
-    for i in 0..accepted.len() {
-        if accepted.get_unchecked(i) == *target {
-            return true;
-        }
-    }
-    false
+    accepted.contains(target)
 }
 
 /// Returns the description hash as a fixed-size byte array.

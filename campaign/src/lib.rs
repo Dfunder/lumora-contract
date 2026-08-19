@@ -1,8 +1,11 @@
 #![no_std]
 
+use common::{
+    is_asset_accepted, validate_add, validate_div, validate_mul, validate_sub, CampaignStatus,
+    MilestoneStatus, AssetInfo, ErrorCode,
+};
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
-    Symbol, Vec,
+    contract, contractimpl, contracttype, symbol_short, Address, BytesN, Env, Symbol, Vec,
 };
 
 pub mod storage;
@@ -29,6 +32,7 @@ pub enum Error {
     PreviousMilestoneNotReleased = 15,
     MilestoneAlreadyReleased = 16,
     MilestoneNotUnlocked = 17,
+    ArithmeticOverflow = 18,
 }
 
 #[contracttype]
@@ -47,38 +51,7 @@ pub enum DataKey {
     MinDonationAmount,
 }
 
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum CampaignStatus {
-    Active,
-    Successful,
-    Failed,
-    GoalReached,
-    Ended,
-    Cancelled,
-}
 
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ContractStatus {
-    Active,
-    Paused,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum MilestoneStatus {
-    Locked,
-    Unlocked,
-    Released,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum AssetInfo {
-    Native,
-    Token(Address),
-}
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -147,14 +120,7 @@ fn get_token_address(env: &Env, asset: &AssetInfo) -> Address {
     }
 }
 
-fn is_accepted_asset(accepted: &Vec<AssetInfo>, target: &AssetInfo) -> bool {
-    for i in 0..accepted.len() {
-        if accepted.get_unchecked(i) == *target {
-            return true;
-        }
-    }
-    false
-}
+
 
 #[contract]
 pub struct CampaignContract;
@@ -269,20 +235,24 @@ impl CampaignContract {
         }
 
         let total_raised = campaign_data.raised_amount;
-        let release_amount = milestone
-            .target_amount
-            .checked_sub(campaign_data.released_amount)
-            .expect("overflow in release amount calculation");
+        let release_amount = validate_sub(milestone.target_amount, campaign_data.released_amount)?;
 
-        for asset_info in campaign_data.accepted_assets.iter() {
+        let mut total_released_this_milestone: i128 = 0;
+
+        for (i, asset_info) in campaign_data.accepted_assets.iter().enumerate() {
             let asset_raised = storage::get_raised_per_asset(&env, asset_info.clone()).unwrap_or(0);
             if asset_raised > 0 {
-                let per_asset_release = (asset_raised as i128)
-                    .checked_mul(release_amount)
-                    .and_then(|v| v.checked_div(total_raised))
-                    .expect("overflow in per-asset release calculation");
+                let per_asset_release = if i == campaign_data.accepted_assets.len() - 1 {
+                    // Last asset, release the remainder
+                    validate_sub(release_amount, total_released_this_milestone)?
+                } else {
+                    validate_div(validate_mul(asset_raised, release_amount)?, total_raised)?
+                };
 
                 if per_asset_release > 0 {
+                    total_released_this_milestone =
+                        validate_add(total_released_this_milestone, per_asset_release)?;
+
                     let token_address = get_token_address(&env, &asset_info);
                     let token_client = soroban_sdk::token::TokenClient::new(&env, &token_address);
                     let tx_hash = BytesN::from_array(&env, &[0u8; 32]);
@@ -309,7 +279,8 @@ impl CampaignContract {
         milestone.released_at = Some(env.ledger().timestamp());
         storage::set_milestone_data(&env, milestone_index, &milestone);
 
-        campaign_data.released_amount += release_amount;
+        campaign_data.released_amount =
+            validate_add(campaign_data.released_amount, release_amount)?;
         campaign_data.next_releasable_milestone += 1;
         storage::set_campaign_data(&env, &campaign_data);
 
@@ -391,7 +362,7 @@ impl CampaignContract {
             return Err(Error::CampaignNotActive);
         }
 
-        if !is_accepted_asset(&data.accepted_assets, &asset) {
+                if !is_asset_accepted(&data.accepted_assets, &asset) {
             panic!("asset not accepted");
         }
 
@@ -399,7 +370,7 @@ impl CampaignContract {
         let token_client = soroban_sdk::token::TokenClient::new(&env, &token_address);
         token_client.transfer(&donor, &env.current_contract_address(), &amount);
 
-        data.raised_amount += amount;
+        data.raised_amount = validate_add(data.raised_amount, amount)?;
 
         let mut goal_just_reached = false;
         if data.raised_amount >= data.goal_amount && data.status != CampaignStatus::GoalReached {
@@ -438,7 +409,7 @@ impl CampaignContract {
             last_donation_time: 0,
         });
 
-        donor_record.total_donated += amount;
+        donor_record.total_donated = validate_add(donor_record.total_donated, amount)?;
         donor_record.last_donation_time = env.ledger().timestamp();
 
         let mut found = false;
@@ -446,7 +417,7 @@ impl CampaignContract {
         while i < donor_record.per_asset.len() {
             let mut item = donor_record.per_asset.get_unchecked(i);
             if item.asset == asset {
-                item.amount += amount;
+                item.amount = validate_add(item.amount, amount)?;
                 donor_record.per_asset.set(i, item);
                 found = true;
                 break;
@@ -463,8 +434,11 @@ impl CampaignContract {
         storage::set_donor_data(&env, &donor, &donor_record);
 
         let total_asset_raised = storage::get_raised_per_asset(&env, asset.clone()).unwrap_or(0);
-        storage::set_raised_per_asset(&env, asset.clone(), total_asset_raised + amount);
-
+        storage::set_raised_per_asset(
+            &env,
+            asset.clone(),
+            validate_add(total_asset_raised, amount)?,
+        );
 
         env.events().publish(
             (symbol_short!("donation"),),
@@ -474,6 +448,8 @@ impl CampaignContract {
         Ok(())
     }
 }
+
+mod test;
 
 #[cfg(test)]
 mod test;

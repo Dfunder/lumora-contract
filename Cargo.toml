@@ -8,3 +8,5 @@ members = [
 
 [workspace.dependencies]
 soroban-sdk = "20.0.0-rc2"
+soroban-sdk-testing = "20.0.0-rc2"
+soroban-sdk-test-utils = "20.0.0-rc2"

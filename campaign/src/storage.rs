@@ -12,7 +12,8 @@
 
 use soroban_sdk::{Address, Env};
 
-use crate::{AssetInfo, CampaignData, ContractStatus, DataKey, DonorRecord, MilestoneData};
+use crate::{CampaignData, ContractStatus, DataKey, DonorRecord, MilestoneData};
+use common::AssetInfo;
 
 pub fn has_campaign_data(env: &Env) -> bool {
     env.storage().persistent().has(&DataKey::CampaignData)
