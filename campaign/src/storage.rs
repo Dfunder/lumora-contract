@@ -69,10 +69,14 @@ pub fn get_contract_status(env: &Env) -> Option<ContractStatus> {
     env.storage().persistent().get(&DataKey::ContractStatus)
 }
 
+/// Sets the locked state to prevent concurrent modifications.
+/// Used to guard against re-entrant calls and concurrent state modifications.
 pub fn set_locked(env: &Env, locked: bool) {
     env.storage().temporary().set(&DataKey::Locked, &locked);
 }
 
+/// Checks if the contract is locked (unable to accept concurrent modifications).
+/// Returns false if the lock state has not been set (default state).
 pub fn is_locked(env: &Env) -> bool {
     env.storage()
         .temporary()
@@ -80,10 +84,30 @@ pub fn is_locked(env: &Env) -> bool {
         .unwrap_or(false)
 }
 
+/// Acquires the contract lock for exclusive operation execution.
+/// This prevents concurrent modifications and re-entrant calls.
+/// Must be paired with a corresponding call to `release_lock()`.
+pub fn acquire_lock(env: &Env) -> Result<(), crate::Error> {
+    if is_locked(env) {
+        return Err(crate::Error::Unauthorized);
+    }
+    set_locked(env, true);
+    Ok(())
+}
+
+/// Releases the contract lock to allow subsequent operations.
+pub fn release_lock(env: &Env) {
+    set_locked(env, false);
+}
+
+/// Sets the frozen state to prevent state transitions.
+/// A frozen contract cannot accept new operations or state modifications.
 pub fn set_frozen(env: &Env, frozen: bool) {
     env.storage().temporary().set(&DataKey::Frozen, &frozen);
 }
 
+/// Checks if the contract is frozen (unable to accept modifications).
+/// Returns false if the frozen state has not been set (default state).
 pub fn is_frozen(env: &Env) -> bool {
     env.storage()
         .temporary()

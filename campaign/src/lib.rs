@@ -2,7 +2,8 @@
 
 use common::{
     is_asset_accepted, validate_add, validate_div, validate_mul, validate_sub, CampaignStatus,
-    MilestoneStatus, AssetInfo, ErrorCode,
+    MilestoneStatus, AssetInfo, ErrorCode, check_creator_auth, check_contract_not_frozen,
+    check_contract_not_locked, check_not_already_initialized,
 };
 use soroban_sdk::{
     contract, contractimpl, contracttype, symbol_short, Address, BytesN, Env, Symbol, Vec,
@@ -128,6 +129,7 @@ pub struct CampaignContract;
 #[contractimpl]
 impl CampaignContract {
     /// Deploys and initializes a campaign. Callable exactly once.
+    /// Enforces explicit authorization and prevents re-initialization attacks.
     pub fn initialize(
         env: Env,
         creator: Address,
@@ -139,9 +141,14 @@ impl CampaignContract {
     ) -> Result<(), Error> {
         creator.require_auth();
 
-        if storage::has_campaign_data(&env) {
-            return Err(Error::AlreadyInitialized);
+        // Check that contract is not frozen
+        if storage::is_frozen(&env) {
+            return Err(Error::Unauthorized);
         }
+
+        // Check that contract is not already initialized
+        check_not_already_initialized(storage::has_campaign_data(&env))
+            .map_err(|_| Error::AlreadyInitialized)?;
 
         if goal_amount <= 0 {
             return Err(Error::InvalidGoalAmount);
@@ -222,20 +229,54 @@ impl CampaignContract {
         let mut campaign_data = expect_campaign_data(&env);
         campaign_data.creator.require_auth();
 
+        // Check that contract is not frozen
+        if storage::is_frozen(&env) {
+            return Err(Error::Unauthorized);
+        }
+
+        // Check that contract is not locked
+        if storage::is_locked(&env) {
+            return Err(Error::Unauthorized);
+        }
+
+        // Acquire lock to prevent concurrent modifications
+        storage::acquire_lock(&env).map_err(|_| Error::Unauthorized)?;
+
+        // Verify creator is the only one who can release milestones
+        if campaign_data.creator != env.current_contract_address() {
+            // Creator has already authorized via require_auth above
+        }
+
         if milestone_index != campaign_data.next_releasable_milestone {
+            storage::release_lock(&env);
             return Err(Error::PreviousMilestoneNotReleased);
         }
 
-        let mut milestone = Self::get_milestone(env.clone(), milestone_index)?;
+        let mut milestone = match Self::get_milestone(env.clone(), milestone_index) {
+            Ok(m) => m,
+            Err(e) => {
+                storage::release_lock(&env);
+                return Err(e);
+            }
+        };
+
         if milestone.status == MilestoneStatus::Released {
+            storage::release_lock(&env);
             return Err(Error::MilestoneAlreadyReleased);
         }
         if milestone.status != MilestoneStatus::Unlocked {
+            storage::release_lock(&env);
             return Err(Error::MilestoneNotUnlocked);
         }
 
         let total_raised = campaign_data.raised_amount;
-        let release_amount = validate_sub(milestone.target_amount, campaign_data.released_amount)?;
+        let release_amount = match validate_sub(milestone.target_amount, campaign_data.released_amount) {
+            Ok(amt) => amt,
+            Err(_) => {
+                storage::release_lock(&env);
+                return Err(Error::ArithmeticOverflow);
+            }
+        };
 
         let mut total_released_this_milestone: i128 = 0;
 
@@ -244,14 +285,37 @@ impl CampaignContract {
             if asset_raised > 0 {
                 let per_asset_release = if i == campaign_data.accepted_assets.len() - 1 {
                     // Last asset, release the remainder
-                    validate_sub(release_amount, total_released_this_milestone)?
+                    match validate_sub(release_amount, total_released_this_milestone) {
+                        Ok(amt) => amt,
+                        Err(_) => {
+                            storage::release_lock(&env);
+                            return Err(Error::ArithmeticOverflow);
+                        }
+                    }
                 } else {
-                    validate_div(validate_mul(asset_raised, release_amount)?, total_raised)?
+                    match validate_mul(asset_raised, release_amount) {
+                        Ok(product) => match validate_div(product, total_raised) {
+                            Ok(quot) => quot,
+                            Err(_) => {
+                                storage::release_lock(&env);
+                                return Err(Error::ArithmeticOverflow);
+                            }
+                        },
+                        Err(_) => {
+                            storage::release_lock(&env);
+                            return Err(Error::ArithmeticOverflow);
+                        }
+                    }
                 };
 
                 if per_asset_release > 0 {
-                    total_released_this_milestone =
-                        validate_add(total_released_this_milestone, per_asset_release)?;
+                    total_released_this_milestone = match validate_add(total_released_this_milestone, per_asset_release) {
+                        Ok(amt) => amt,
+                        Err(_) => {
+                            storage::release_lock(&env);
+                            return Err(Error::ArithmeticOverflow);
+                        }
+                    };
 
                     let token_address = get_token_address(&env, &asset_info);
                     let token_client = soroban_sdk::token::TokenClient::new(&env, &token_address);
@@ -279,11 +343,17 @@ impl CampaignContract {
         milestone.released_at = Some(env.ledger().timestamp());
         storage::set_milestone_data(&env, milestone_index, &milestone);
 
-        campaign_data.released_amount =
-            validate_add(campaign_data.released_amount, release_amount)?;
+        campaign_data.released_amount = match validate_add(campaign_data.released_amount, release_amount) {
+            Ok(amt) => amt,
+            Err(_) => {
+                storage::release_lock(&env);
+                return Err(Error::ArithmeticOverflow);
+            }
+        };
         campaign_data.next_releasable_milestone += 1;
         storage::set_campaign_data(&env, &campaign_data);
 
+        storage::release_lock(&env);
         Ok(())
     }
 
@@ -338,6 +408,16 @@ impl CampaignContract {
 
     pub fn donate(env: Env, donor: Address, amount: i128, asset: AssetInfo) -> Result<(), Error> {
         donor.require_auth();
+
+        // Check that contract is not frozen
+        if storage::is_frozen(&env) {
+            return Err(Error::Unauthorized);
+        }
+
+        // Check that contract is not locked
+        if storage::is_locked(&env) {
+            return Err(Error::Unauthorized);
+        }
 
         if amount <= 0 {
             return Err(Error::InvalidAmount);

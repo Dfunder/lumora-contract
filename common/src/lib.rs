@@ -145,6 +145,45 @@ pub fn description_hash_bytes(hash: &BytesN<32>) -> [u8; 32] {
     hash.to_array()
 }
 
+// ─── Authorization and State Validation ──────────────────────────────────────
+
+/// Validates that the creator is authorized to perform an operation.
+/// This is called after `creator.require_auth()` has been invoked to ensure
+/// explicit authorization checks are in place at operation boundaries.
+pub fn check_creator_auth(env: &Env, creator: &Address, caller: &Address) -> Result<(), ErrorCode> {
+    if *creator != *caller {
+        return Err(ErrorCode::Unauthorized);
+    }
+    Ok(())
+}
+
+/// Validates that the contract is not frozen (unable to accept modifications).
+/// Frozen contracts prevent state transitions and new operations.
+pub fn check_contract_not_frozen(env: &Env, is_frozen: bool) -> Result<(), ErrorCode> {
+    if is_frozen {
+        return Err(ErrorCode::Unauthorized);
+    }
+    Ok(())
+}
+
+/// Validates that the contract is not locked (no concurrent modifications).
+/// Locked contracts prevent re-entrant calls and concurrent state modifications.
+pub fn check_contract_not_locked(env: &Env, is_locked: bool) -> Result<(), ErrorCode> {
+    if is_locked {
+        return Err(ErrorCode::Unauthorized);
+    }
+    Ok(())
+}
+
+/// Validates that the contract has not been already initialized.
+/// Prevents re-initialization attacks.
+pub fn check_not_already_initialized(is_initialized: bool) -> Result<(), ErrorCode> {
+    if is_initialized {
+        return Err(ErrorCode::AlreadyInitialized);
+    }
+    Ok(())
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -207,5 +246,45 @@ mod tests {
             &accepted,
             &AssetInfo::Token(other_address)
         ));
+    }
+
+    #[test]
+    fn test_check_creator_auth() {
+        let env = Env::default();
+        let creator = Address::generate(&env);
+        let other = Address::generate(&env);
+
+        assert!(check_creator_auth(&env, &creator, &creator).is_ok());
+        assert_eq!(
+            check_creator_auth(&env, &creator, &other),
+            Err(ErrorCode::Unauthorized)
+        );
+    }
+
+    #[test]
+    fn test_check_contract_not_frozen() {
+        assert!(check_contract_not_frozen(&Env::default(), false).is_ok());
+        assert_eq!(
+            check_contract_not_frozen(&Env::default(), true),
+            Err(ErrorCode::Unauthorized)
+        );
+    }
+
+    #[test]
+    fn test_check_contract_not_locked() {
+        assert!(check_contract_not_locked(&Env::default(), false).is_ok());
+        assert_eq!(
+            check_contract_not_locked(&Env::default(), true),
+            Err(ErrorCode::Unauthorized)
+        );
+    }
+
+    #[test]
+    fn test_check_not_already_initialized() {
+        assert!(check_not_already_initialized(false).is_ok());
+        assert_eq!(
+            check_not_already_initialized(true),
+            Err(ErrorCode::AlreadyInitialized)
+        );
     }
 }
