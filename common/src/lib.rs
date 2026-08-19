@@ -132,7 +132,12 @@ pub fn is_asset_accepted(
     accepted: &soroban_sdk::Vec<AssetInfo>,
     target: &AssetInfo,
 ) -> bool {
-    accepted.contains(target)
+    for asset in accepted.iter() {
+        if assets_equal(&asset, target) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Returns the description hash as a fixed-size byte array.
@@ -191,16 +196,14 @@ mod tests {
         accepted.push_back(AssetInfo::Native);
         accepted.push_back(AssetInfo::Token(address.clone()));
 
-        assert!(is_asset_accepted(&env, &accepted, &AssetInfo::Native));
+        assert!(is_asset_accepted(&accepted, &AssetInfo::Native));
         assert!(is_asset_accepted(
-            &env,
             &accepted,
             &AssetInfo::Token(address.clone())
         ));
 
         let other_address = Address::generate(&env);
         assert!(!is_asset_accepted(
-            &env,
             &accepted,
             &AssetInfo::Token(other_address)
         ));

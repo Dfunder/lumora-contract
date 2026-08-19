@@ -166,14 +166,14 @@ impl CampaignContract {
 
         let mut previous_amount: i128 = 0;
         for i in 0..milestone_count {
-            let milestone = milestones.get_unchecked(i);
+            let milestone = milestones.get(i).unwrap();
             if milestone.target_amount <= previous_amount {
                 return Err(Error::InvalidMilestones);
             }
             previous_amount = milestone.target_amount;
         }
 
-        if milestones.get_unchecked(milestone_count - 1).target_amount != goal_amount {
+        if milestones.last().unwrap().target_amount != goal_amount {
             return Err(Error::InvalidMilestones);
         }
 
@@ -194,7 +194,7 @@ impl CampaignContract {
         storage::set_campaign_data(&env, &campaign_data);
 
         for i in 0..milestone_count {
-            let input = milestones.get_unchecked(i);
+            let input = milestones.get(i).unwrap();
             let milestone_data = MilestoneData {
                 index: i,
                 target_amount: input.target_amount,
@@ -226,7 +226,7 @@ impl CampaignContract {
             return Err(Error::PreviousMilestoneNotReleased);
         }
 
-        let mut milestone = Self::get_milestone(env.clone(), milestone_index);
+        let mut milestone = Self::get_milestone(env.clone(), milestone_index)?;
         if milestone.status == MilestoneStatus::Released {
             return Err(Error::MilestoneAlreadyReleased);
         }
@@ -317,13 +317,12 @@ impl CampaignContract {
         data.creator.require_auth();
     }
 
-    pub fn get_milestone(env: Env, index: u32) -> MilestoneData {
+    pub fn get_milestone(env: Env, index: u32) -> Result<MilestoneData, Error> {
         let data = expect_campaign_data(&env);
         if index >= data.milestone_count {
-            panic!("MilestoneNotFound");
+            return Err(Error::MilestoneNotFound);
         }
-        storage::get_milestone_data(&env, index)
-            .expect("MilestoneNotFound")
+        storage::get_milestone_data(&env, index).ok_or(Error::MilestoneNotFound)
     }
 
     pub fn get_all_milestones(env: Env) -> Vec<MilestoneData> {
@@ -341,7 +340,7 @@ impl CampaignContract {
         donor.require_auth();
 
         if amount <= 0 {
-            panic!("amount must be positive");
+            return Err(Error::InvalidAmount);
         }
 
         let min_donation = Self::get_min_donation_amount(env.clone());
@@ -362,8 +361,8 @@ impl CampaignContract {
             return Err(Error::CampaignNotActive);
         }
 
-                if !is_asset_accepted(&data.accepted_assets, &asset) {
-            panic!("asset not accepted");
+        if !is_asset_accepted(&data.accepted_assets, &asset) {
+            return Err(Error::NotAcceptedAsset);
         }
 
         let token_address = get_token_address(&env, &asset);
@@ -413,17 +412,14 @@ impl CampaignContract {
         donor_record.last_donation_time = env.ledger().timestamp();
 
         let mut found = false;
-        let mut i = 0;
-        while i < donor_record.per_asset.len() {
-            let mut item = donor_record.per_asset.get_unchecked(i);
+        for item in donor_record.per_asset.iter_mut() {
             if item.asset == asset {
                 item.amount = validate_add(item.amount, amount)?;
-                donor_record.per_asset.set(i, item);
                 found = true;
                 break;
             }
-            i += 1;
         }
+
         if !found {
             donor_record.per_asset.push_back(PerAssetBreakdown {
                 asset: asset.clone(),
@@ -449,7 +445,4 @@ impl CampaignContract {
     }
 }
 
-mod test;
-
-#[cfg(test)]
 mod test;
