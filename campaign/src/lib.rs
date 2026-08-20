@@ -325,7 +325,7 @@ impl CampaignContract {
                         &per_asset_release,
                     );
                     env.events().publish(
-                        (symbol_short!("milestone_released"),),
+                        (Symbol::new(&env, "milestone_released"),),
                         (
                             milestone_index,
                             per_asset_release,
