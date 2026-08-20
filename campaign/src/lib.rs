@@ -333,12 +333,14 @@ impl CampaignContract {
                         &per_asset_release,
                     );
                     env.events().publish(
-                        (Symbol::new(&env, "milestone_released"),),
                         (
+                            Symbol::new(&env, "milestone_released"),
                             milestone_index,
-                            per_asset_release,
-                            asset_info,
+                            asset_info.clone(),
                             recipient.clone(),
+                        ),
+                        (
+                            per_asset_release,
                             env.ledger().timestamp(),
                         ),
                     );
