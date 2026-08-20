@@ -184,14 +184,14 @@ pub struct DonorRecord {
     pub last_donation_time: u64,
 }
 
-fn expect_campaign_data(env: &Env) -> CampaignData {
-    storage::get_campaign_data(env).expect("campaign not initialized")
+fn get_campaign_data(env: &Env) -> Result<CampaignData, Error> {
+    storage::get_campaign_data(env).ok_or(Error::NotInitialized)
 }
 
-fn get_token_address(env: &Env, asset: &AssetInfo) -> Address {
+fn get_token_address(env: &Env, asset: &AssetInfo) -> Result<Address, Error> {
     match asset {
-        AssetInfo::Native => storage::get_xlm_token(env).expect("XLM token address not set"),
-        AssetInfo::Token(address) => address.clone(),
+        AssetInfo::Native => storage::get_xlm_token(env).ok_or(Error::NotInitialized),
+        AssetInfo::Token(address) => Ok(address.clone()),
     }
 }
 
