@@ -489,14 +489,14 @@ impl CampaignContract {
         storage::get_milestone_data(&env, index).ok_or(Error::MilestoneNotFound)
     }
 
-    pub fn get_all_milestones(env: Env) -> Vec<MilestoneData> {
-        let data = expect_campaign_data(&env);
+    pub fn get_all_milestones(env: Env) -> Result<Vec<MilestoneData>, Error> {
+        let data = get_campaign_data(&env)?;
         let mut milestones: Vec<MilestoneData> = Vec::new(&env);
         for i in 0..data.milestone_count {
-            let milestone = storage::get_milestone_data(&env, i).expect("MilestoneNotFound");
+            let milestone = storage::get_milestone_data(&env, i).ok_or(Error::MilestoneNotFound)?;
             milestones.push_back(milestone);
         }
-        milestones
+        Ok(milestones)
     }
 
     /// Checks if a donor is eligible for a refund.
