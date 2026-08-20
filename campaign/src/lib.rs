@@ -298,21 +298,21 @@ impl CampaignContract {
         milestone_index: u32,
         recipient: Address,
     ) -> Result<(), Error> {
-        let mut campaign_data = expect_campaign_data(&env);
+        let mut campaign_data = get_campaign_data(&env)?;
         campaign_data.creator.require_auth();
 
         // Check that contract is not frozen
         if storage::is_frozen(&env) {
-            return Err(Error::Unauthorized);
+            return Err(Error::ContractFrozen);
         }
 
         // Check that contract is not locked
         if storage::is_locked(&env) {
-            return Err(Error::Unauthorized);
+            return Err(Error::Reentrant);
         }
 
         // Acquire lock to prevent concurrent modifications
-        storage::acquire_lock(&env).map_err(|_| Error::Unauthorized)?;
+        storage::acquire_lock(&env)?;
 
         // Verify creator is the only one who can release milestones
         if campaign_data.creator != env.current_contract_address() {
