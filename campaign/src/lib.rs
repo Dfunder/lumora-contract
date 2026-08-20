@@ -731,12 +731,12 @@ impl CampaignContract {
 
         // Check that contract is not frozen
         if storage::is_frozen(&env) {
-            return Err(Error::Unauthorized);
+            return Err(Error::ContractFrozen);
         }
 
         // Check that contract is not locked
         if storage::is_locked(&env) {
-            return Err(Error::Unauthorized);
+            return Err(Error::Reentrant);
         }
 
         if amount <= 0 {
@@ -748,7 +748,7 @@ impl CampaignContract {
             return Err(Error::DonationTooSmall);
         }
 
-        let mut data = expect_campaign_data(&env);
+        let mut data = get_campaign_data(&env)?;
 
         if env.ledger().timestamp() > data.end_time {
             return Err(Error::CampaignEnded);
@@ -765,7 +765,7 @@ impl CampaignContract {
             return Err(Error::AssetNotAccepted);
         }
 
-        let token_address = get_token_address(&env, &asset);
+        let token_address = get_token_address(&env, &asset)?;
         let token_client = soroban_sdk::token::TokenClient::new(&env, &token_address);
         token_client.transfer(&donor, &env.current_contract_address(), &amount);
 
