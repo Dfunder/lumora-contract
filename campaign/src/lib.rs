@@ -347,13 +347,18 @@ impl CampaignContract {
             milestone.target_amount
         } else {
             // Subsequent milestones: release the difference between current and previous milestone's target
-            let previous_milestone = storage::get_milestone_data(&env, milestone_index - 1)
-                .expect("previous milestone not found");
+            let previous_milestone = match storage::get_milestone_data(&env, milestone_index - 1) {
+                Some(m) => m,
+                None => {
+                    storage::release_lock(&env);
+                    return Err(Error::MilestoneNotFound);
+                }
+            };
             match validate_sub(milestone.target_amount, previous_milestone.target_amount) {
                 Ok(amt) => amt,
                 Err(_) => {
                     storage::release_lock(&env);
-                    return Err(Error::ArithmeticOverflow);
+                    return Err(Error::Overflow);
                 }
             }
         };
@@ -369,7 +374,7 @@ impl CampaignContract {
                         Ok(amt) => amt,
                         Err(_) => {
                             storage::release_lock(&env);
-                            return Err(Error::ArithmeticOverflow);
+                            return Err(Error::Overflow);
                         }
                     }
                 } else {
@@ -378,7 +383,7 @@ impl CampaignContract {
                             Ok(quot) => quot,
                             Err(_) => {
                                 storage::release_lock(&env);
-                                return Err(Error::ArithmeticOverflow);
+                                return Err(Error::Overflow);
                             }
                         },
                         Err(_) => {
