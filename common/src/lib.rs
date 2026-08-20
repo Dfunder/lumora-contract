@@ -66,10 +66,7 @@ const ZERO_ADDRESS_STR: &str = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 
 /// Validates that an address is not the zero address.
 pub fn validate_address(env: &Env, address: &Address) -> Result<(), ErrorCode> {
-    let zero_address = Address::from_string(&soroban_sdk::String::from_str(
-        env,
-        ZERO_ADDRESS_STR,
-    ));
+    let zero_address = Address::from_string(&soroban_sdk::String::from_str(env, ZERO_ADDRESS_STR));
     if *address == zero_address {
         return Err(ErrorCode::InvalidAddress);
     }
@@ -128,10 +125,7 @@ pub fn assets_equal(a: &AssetInfo, b: &AssetInfo) -> bool {
 }
 
 /// Checks if an asset is in a list of accepted assets.
-pub fn is_asset_accepted(
-    accepted: &soroban_sdk::Vec<AssetInfo>,
-    target: &AssetInfo,
-) -> bool {
+pub fn is_asset_accepted(accepted: &soroban_sdk::Vec<AssetInfo>, target: &AssetInfo) -> bool {
     for asset in accepted.iter() {
         if assets_equal(&asset, target) {
             return true;
@@ -223,7 +217,10 @@ mod tests {
             &AssetInfo::Token(address.clone()),
             &AssetInfo::Token(address.clone())
         ));
-        assert!(!assets_equal(&AssetInfo::Native, &AssetInfo::Token(address)));
+        assert!(!assets_equal(
+            &AssetInfo::Native,
+            &AssetInfo::Token(address)
+        ));
     }
 
     #[test]

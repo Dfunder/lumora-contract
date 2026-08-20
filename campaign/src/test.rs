@@ -536,7 +536,7 @@ fn test_donate_freezes_state_validation() {
     );
 
     let donor = Address::random(&env);
-    
+
     // Donate successfully
     let result = client.try_donate(&donor, &5_000, &AssetInfo::Native);
     assert!(result.is_ok());
@@ -575,7 +575,7 @@ fn test_unauthorized_donor_cannot_donate() {
     );
 
     let unauthorized_donor = Address::random(&env);
-    
+
     // Try to donate without authorization
     let result = CampaignClient::new(&env, &contract_id).try_donate(
         &unauthorized_donor,
@@ -618,8 +618,413 @@ fn test_donation_validates_campaign_status() {
     env.ledger().with_mut(|l| l.timestamp = end_time + 1);
 
     let donor = Address::random(&env);
-    
+
     // Try to donate after campaign ended
     let result = client.try_donate(&donor, &5_000, &AssetInfo::Native);
     assert_eq!(result, Err(Ok(Error::CampaignEnded)));
+}
+
+// ─── Refund Tests ───────────────────────────────────────────────────────────────
+
+#[test]
+fn test_multi_asset_refund_exact_calculation() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, Campaign);
+    let client = CampaignClient::new(&env, &contract_id);
+
+    let creator = Address::random(&env);
+    let goal_amount = 10_000;
+    let end_time = env.ledger().timestamp() + 1000;
+
+    // Setup multi-asset campaign
+    let token_address = Address::random(&env);
+    let accepted_assets = soroban_sdk::vec![
+        &env,
+        AssetInfo::Native,
+        AssetInfo::Token(token_address.clone()),
+    ];
+    let milestones = soroban_sdk::vec![
+        &env,
+        MilestoneInput {
+            target_amount: 10_000,
+            description_hash: [0; 32].into(),
+        },
+    ];
+    let min_donation = 100;
+
+    client.initialize(
+        &creator,
+        &goal_amount,
+        &end_time,
+        &accepted_assets,
+        &milestones,
+        &min_donation,
+    );
+
+    // Set XLM token address for Native asset
+    client.set_xlm_token(&token_address);
+
+    let donor = Address::random(&env);
+
+    // Donate with multiple assets
+    client.donate(&donor, &3_000, &AssetInfo::Native);
+    client.donate(&donor, &2_500, &AssetInfo::Token(token_address.clone()));
+
+    // Verify donor record
+    let donor_record = client.get_donor_record(&donor).unwrap();
+    assert_eq!(donor_record.total_donated, 5_500);
+    assert_eq!(donor_record.per_asset.len(), 2);
+
+    // Cancel campaign to enable refunds
+    client.cancel_campaign();
+
+    // Verify refund eligibility
+    assert!(client.is_refund_eligible(&donor));
+
+    // Process refund
+    let result = client.try_refund(&donor);
+    assert!(result.is_ok(), "refund failed: {:?}", result);
+
+    // Verify donor record was cleared
+    let donor_record_after = client.get_donor_record(&donor);
+    assert!(donor_record_after.is_none() || donor_record_after.unwrap().total_donated == 0);
+
+    // Verify cannot refund twice
+    let result = client.try_refund(&donor);
+    assert_eq!(result, Err(Ok(Error::NoRefundAvailable)));
+}
+
+#[test]
+fn test_refund_window_boundary_at_expiration() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, Campaign);
+    let client = CampaignClient::new(&env, &contract_id);
+
+    let creator = Address::random(&env);
+    let goal_amount = 10_000;
+    let end_time = env.ledger().timestamp() + 1000;
+    let accepted_assets = soroban_sdk::vec![&env, AssetInfo::Native];
+    let milestones = soroban_sdk::vec![
+        &env,
+        MilestoneInput {
+            target_amount: 10_000,
+            description_hash: [0; 32].into(),
+        },
+    ];
+    let min_donation = 100;
+
+    client.initialize(
+        &creator,
+        &goal_amount,
+        &end_time,
+        &accepted_assets,
+        &milestones,
+        &min_donation,
+    );
+
+    let token_address = Address::random(&env);
+    client.set_xlm_token(&token_address);
+
+    let donor = Address::random(&env);
+    client.donate(&donor, &5_000, &AssetInfo::Native);
+
+    // Cancel campaign
+    client.cancel_campaign();
+
+    // Get cancellation time
+    let campaign_data = client.get_campaign_info();
+    let cancel_time = env.ledger().timestamp();
+
+    // Test refund exactly at window boundary (should succeed)
+    env.ledger()
+        .with_mut(|l| l.timestamp = cancel_time + 30 * 24 * 60 * 60);
+    assert!(client.is_refund_eligible(&donor));
+    let result = client.try_refund(&donor);
+    assert!(
+        result.is_ok(),
+        "refund at boundary should succeed: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_refund_window_closed_after_boundary() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, Campaign);
+    let client = CampaignClient::new(&env, &contract_id);
+
+    let creator = Address::random(&env);
+    let goal_amount = 10_000;
+    let end_time = env.ledger().timestamp() + 1000;
+    let accepted_assets = soroban_sdk::vec![&env, AssetInfo::Native];
+    let milestones = soroban_sdk::vec![
+        &env,
+        MilestoneInput {
+            target_amount: 10_000,
+            description_hash: [0; 32].into(),
+        },
+    ];
+    let min_donation = 100;
+
+    client.initialize(
+        &creator,
+        &goal_amount,
+        &end_time,
+        &accepted_assets,
+        &milestones,
+        &min_donation,
+    );
+
+    let token_address = Address::random(&env);
+    client.set_xlm_token(&token_address);
+
+    let donor = Address::random(&env);
+    client.donate(&donor, &5_000, &AssetInfo::Native);
+
+    // Cancel campaign
+    client.cancel_campaign();
+    let cancel_time = env.ledger().timestamp();
+
+    // Advance time past refund window
+    env.ledger()
+        .with_mut(|l| l.timestamp = cancel_time + 30 * 24 * 60 * 60 + 1);
+
+    // Verify not eligible
+    assert!(!client.is_refund_eligible(&donor));
+
+    // Try to refund - should fail with RefundWindowClosed
+    let result = client.try_refund(&donor);
+    assert_eq!(result, Err(Ok(Error::RefundWindowClosed)));
+}
+
+#[test]
+fn test_refund_only_in_cancelled_or_failed_status() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, Campaign);
+    let client = CampaignClient::new(&env, &contract_id);
+
+    let creator = Address::random(&env);
+    let goal_amount = 10_000;
+    let end_time = env.ledger().timestamp() + 1000;
+    let accepted_assets = soroban_sdk::vec![&env, AssetInfo::Native];
+    let milestones = soroban_sdk::vec![
+        &env,
+        MilestoneInput {
+            target_amount: 10_000,
+            description_hash: [0; 32].into(),
+        },
+    ];
+    let min_donation = 100;
+
+    client.initialize(
+        &creator,
+        &goal_amount,
+        &end_time,
+        &accepted_assets,
+        &milestones,
+        &min_donation,
+    );
+
+    let token_address = Address::random(&env);
+    client.set_xlm_token(&token_address);
+
+    let donor = Address::random(&env);
+    client.donate(&donor, &5_000, &AssetInfo::Native);
+
+    // Try to refund while campaign is still active - should fail
+    assert!(!client.is_refund_eligible(&donor));
+    let result = client.try_refund(&donor);
+    assert_eq!(result, Err(Ok(Error::CampaignNotActive)));
+}
+
+#[test]
+fn test_fail_campaign_starts_refund_window() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, Campaign);
+    let client = CampaignClient::new(&env, &contract_id);
+
+    let creator = Address::random(&env);
+    let goal_amount = 10_000;
+    let end_time = env.ledger().timestamp() + 1000;
+    let accepted_assets = soroban_sdk::vec![&env, AssetInfo::Native];
+    let milestones = soroban_sdk::vec![
+        &env,
+        MilestoneInput {
+            target_amount: 10_000,
+            description_hash: [0; 32].into(),
+        },
+    ];
+    let min_donation = 100;
+
+    client.initialize(
+        &creator,
+        &goal_amount,
+        &end_time,
+        &accepted_assets,
+        &milestones,
+        &min_donation,
+    );
+
+    let token_address = Address::random(&env);
+    client.set_xlm_token(&token_address);
+
+    let donor = Address::random(&env);
+    client.donate(&donor, &5_000, &AssetInfo::Native);
+
+    // Fail campaign
+    client.fail_campaign();
+
+    // Verify status is Failed
+    let campaign_data = client.get_campaign_info();
+    assert_eq!(campaign_data.status, CampaignStatus::Failed);
+
+    // Verify refund eligibility
+    assert!(client.is_refund_eligible(&donor));
+
+    // Process refund
+    let result = client.try_refund(&donor);
+    assert!(result.is_ok(), "refund after failure failed: {:?}", result);
+}
+
+#[test]
+fn test_refund_requires_donor_authorization() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, Campaign);
+    let client = CampaignClient::new(&env, &contract_id);
+
+    let creator = Address::random(&env);
+    let goal_amount = 10_000;
+    let end_time = env.ledger().timestamp() + 1000;
+    let accepted_assets = soroban_sdk::vec![&env, AssetInfo::Native];
+    let milestones = soroban_sdk::vec![
+        &env,
+        MilestoneInput {
+            target_amount: 10_000,
+            description_hash: [0; 32].into(),
+        },
+    ];
+    let min_donation = 100;
+
+    client.initialize(
+        &creator,
+        &goal_amount,
+        &end_time,
+        &accepted_assets,
+        &milestones,
+        &min_donation,
+    );
+
+    let token_address = Address::random(&env);
+    client.set_xlm_token(&token_address);
+
+    let donor = Address::random(&env);
+    client.donate(&donor, &5_000, &AssetInfo::Native);
+
+    // Cancel campaign
+    client.cancel_campaign();
+
+    // Try to refund without donor authorization
+    let unauthorized_caller = Address::random(&env);
+    let result = CampaignClient::new(&env, &contract_id).try_refund(&donor);
+    // Authorization should fail at require_auth()
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_get_refund_window_remaining() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, Campaign);
+    let client = CampaignClient::new(&env, &contract_id);
+
+    let creator = Address::random(&env);
+    let goal_amount = 10_000;
+    let end_time = env.ledger().timestamp() + 1000;
+    let accepted_assets = soroban_sdk::vec![&env, AssetInfo::Native];
+    let milestones = soroban_sdk::vec![
+        &env,
+        MilestoneInput {
+            target_amount: 10_000,
+            description_hash: [0; 32].into(),
+        },
+    ];
+    let min_donation = 100;
+
+    client.initialize(
+        &creator,
+        &goal_amount,
+        &end_time,
+        &accepted_assets,
+        &milestones,
+        &min_donation,
+    );
+
+    // Before cancellation, should return None
+    assert_eq!(client.get_refund_window_remaining(), None);
+
+    // Cancel campaign
+    client.cancel_campaign();
+    let cancel_time = env.ledger().timestamp();
+
+    // Should return remaining time
+    let remaining = client.get_refund_window_remaining();
+    assert!(remaining.is_some());
+    assert_eq!(remaining.unwrap(), 30 * 24 * 60 * 60);
+
+    // Advance time by 10 days
+    env.ledger()
+        .with_mut(|l| l.timestamp = cancel_time + 10 * 24 * 60 * 60);
+    let remaining = client.get_refund_window_remaining();
+    assert!(remaining.is_some());
+    assert_eq!(remaining.unwrap(), 20 * 24 * 60 * 60);
+
+    // After window closes, should return None
+    env.ledger()
+        .with_mut(|l| l.timestamp = cancel_time + 30 * 24 * 60 * 60 + 1);
+    assert_eq!(client.get_refund_window_remaining(), None);
+}
+
+#[test]
+fn test_get_refundable_amount() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, Campaign);
+    let client = CampaignClient::new(&env, &contract_id);
+
+    let creator = Address::random(&env);
+    let goal_amount = 10_000;
+    let end_time = env.ledger().timestamp() + 1000;
+    let accepted_assets = soroban_sdk::vec![&env, AssetInfo::Native];
+    let milestones = soroban_sdk::vec![
+        &env,
+        MilestoneInput {
+            target_amount: 10_000,
+            description_hash: [0; 32].into(),
+        },
+    ];
+    let min_donation = 100;
+
+    client.initialize(
+        &creator,
+        &goal_amount,
+        &end_time,
+        &accepted_assets,
+        &milestones,
+        &min_donation,
+    );
+
+    let token_address = Address::random(&env);
+    client.set_xlm_token(&token_address);
+
+    let donor = Address::random(&env);
+
+    // Initially no refundable amount
+    assert_eq!(client.get_refundable_amount(&donor), 0);
+
+    // After donation
+    client.donate(&donor, &5_000, &AssetInfo::Native);
+    assert_eq!(client.get_refundable_amount(&donor), 5_000);
+
+    // After refund
+    client.cancel_campaign();
+    client.refund(&donor);
+    assert_eq!(client.get_refundable_amount(&donor), 0);
 }
