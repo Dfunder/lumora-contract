@@ -569,10 +569,10 @@ impl CampaignContract {
 
         // Check that contract is not frozen
         if storage::is_frozen(&env) {
-            return Err(Error::Unauthorized);
+            return Err(Error::ContractFrozen);
         }
 
-        let campaign_data = expect_campaign_data(&env);
+        let campaign_data = get_campaign_data(&env)?;
 
         // Check campaign status
         if !matches!(
@@ -607,7 +607,7 @@ impl CampaignContract {
         let mut total_refunded: i128 = 0;
         for per_asset in donor_record.per_asset.iter() {
             if per_asset.amount > 0 {
-                let token_address = get_token_address(&env, &per_asset.asset);
+                let token_address = get_token_address(&env, &per_asset.asset)?;
                 let token_client = soroban_sdk::token::TokenClient::new(&env, &token_address);
 
                 token_client.transfer(&env.current_contract_address(), &donor, &per_asset.amount);
