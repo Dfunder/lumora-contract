@@ -319,20 +319,19 @@ impl CampaignContract {
 
                     let token_address = get_token_address(&env, &asset_info);
                     let token_client = soroban_sdk::token::TokenClient::new(&env, &token_address);
-                    let tx_hash = BytesN::from_array(&env, &[0u8; 32]);
                     token_client.transfer(
                         &env.current_contract_address(),
                         &recipient,
                         &per_asset_release,
                     );
                     env.events().publish(
-                        (symbol_short!("released"),),
+                        (symbol_short!("milestone_released"),),
                         (
                             milestone_index,
                             per_asset_release,
                             asset_info,
                             recipient.clone(),
-                            tx_hash,
+                            env.ledger().timestamp(),
                         ),
                     );
                 }
