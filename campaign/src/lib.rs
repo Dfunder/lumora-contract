@@ -643,12 +643,12 @@ impl CampaignContract {
     /// Only callable by the campaign creator.
     /// Sets the campaign status to Cancelled and records the end time for refund window calculation.
     pub fn cancel_campaign(env: Env) -> Result<(), Error> {
-        let mut campaign_data = expect_campaign_data(&env);
+        let mut campaign_data = get_campaign_data(&env)?;
         campaign_data.creator.require_auth();
 
         // Check that contract is not frozen
         if storage::is_frozen(&env) {
-            return Err(Error::Unauthorized);
+            return Err(Error::ContractFrozen);
         }
 
         // Only allow cancellation from Active or GoalReached status
@@ -657,6 +657,12 @@ impl CampaignContract {
             CampaignStatus::Active | CampaignStatus::GoalReached
         ) {
             return Err(Error::CampaignNotActive);
+        }
+
+        // Prevent cancellation if there are still unreleased funds in the contract
+        let remaining_funds = validate_sub(campaign_data.raised_amount, campaign_data.released_amount)?;
+        if remaining_funds > 0 {
+            return Err(Error::CannotCancelWithFunds);
         }
 
         // Update campaign status
