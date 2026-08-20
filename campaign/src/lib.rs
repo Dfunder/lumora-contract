@@ -17,26 +17,98 @@ const REFUND_WINDOW: u64 = 30 * 24 * 60 * 60; // 30 days in seconds
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Error {
+    /// Thrown when an unauthorized caller attempts to perform an operation that requires
+    /// elevated permissions (e.g., admin-only actions, creator-only actions).
+    /// Recoverable: This is a bad input issue - only the authorized caller can retry.
     Unauthorized = 1,
+    
+    /// Thrown when initialize() is called more than once on a contract.
+    /// Terminal: This indicates a re-initialization attack or incorrect usage.
     AlreadyInitialized = 2,
+    
+    /// Thrown when a campaign is interacted with before it has been initialized.
+    /// Recoverable: The caller must initialize the contract first before performing other operations.
+    NotInitialized = 21,
+    
+    /// Thrown when the goal amount provided during initialization is <= 0.
+    /// Recoverable: Fix the goal amount to a positive value and retry initialization.
     InvalidGoalAmount = 3,
+    
+    /// Thrown when the end time provided during initialization is in the past.
+    /// Recoverable: Fix the end time to a future timestamp and retry initialization.
     InvalidEndTime = 4,
+    
+    /// Thrown when no accepted assets are provided during initialization.
+    /// Recoverable: Provide at least one accepted asset and retry initialization.
     NoAcceptedAssets = 5,
+    
+    /// Thrown when milestones provided during initialization are invalid (wrong count, non-increasing amounts, last milestone != goal).
+    /// Recoverable: Fix the milestones to meet the validation criteria and retry initialization.
     InvalidMilestones = 6,
+    
+    /// Thrown when an invalid amount (<=0) is provided for an operation.
+    /// Recoverable: Provide a valid positive amount and retry.
     InvalidAmount = 7,
-    NotAcceptedAsset = 8,
+    
+    /// Thrown when an asset that is not in the campaign's accepted assets list is used in a donation.
+    /// Recoverable: Use an accepted asset or add the asset to the campaign's accepted assets list.
+    AssetNotAccepted = 8,
+    
+    /// Thrown when an operation is attempted on a campaign that is not in an active state.
+    /// Recoverable: Verify the campaign's current status before attempting the operation.
     CampaignNotActive = 9,
+    
+    /// Thrown when an operation is attempted on a campaign that has passed its end time.
+    /// Recoverable: Cannot be retried - campaign has concluded.
     CampaignEnded = 10,
+    
+    /// Thrown when attempting to cancel a campaign that has remaining funds in the contract.
+    /// Recoverable: Withdraw or distribute all funds before attempting to cancel.
+    CannotCancelWithFunds = 22,
+    
+    /// Thrown when a refund is attempted after the refund window (30 days after campaign end) has closed.
+    /// Recoverable: Cannot be retried - refund window has expired.
+    RefundWindowClosed = 19,
+    
+    /// Thrown when a milestone with the specified index does not exist on the campaign.
+    /// Recoverable: Verify the milestone index exists before attempting the operation.
+    MilestoneNotFound = 13,
+    
+    /// Thrown when attempting to release a milestone that is still in Locked status.
+    /// Recoverable: Wait for the milestone to be unlocked (when enough funds are raised) before attempting to release.
+    MilestoneNotUnlocked = 17,
+    
+    /// Thrown when attempting to release a milestone out of order - a previous milestone has not been released.
+    /// Recoverable: Release milestones in sequential order.
+    PreviousMilestoneNotReleased = 15,
+    
+    /// Thrown when a donation is less than the campaign's minimum donation amount.
+    /// Recoverable: Increase the donation amount to meet the minimum and retry.
+    DonationTooSmall = 14,
+    
+    /// Thrown when an arithmetic operation would cause an overflow or underflow.
+    /// Terminal: This indicates a critical bug in the contract's accounting logic.
+    Overflow = 18,
+    
+    /// Thrown when a reentrant call is detected on the contract.
+    /// Terminal: This indicates a reentrancy attack or incorrect usage of reentrant calls.
+    Reentrant = 23,
+    
+    /// Thrown when an operation is attempted on a frozen contract.
+    /// Recoverable: Cannot be retried - contract is frozen and cannot accept modifications.
+    ContractFrozen = 24,
+    
+    /// Thrown when there is insufficient balance in the contract to perform an operation (e.g., withdrawal, transfer).
+    /// Recoverable: Ensure the contract has enough funds before attempting the operation.
+    InsufficientContractBalance = 25,
+    
+    // Legacy errors maintained for backward compatibility
     CampaignCancelled = 11,
     DonationFailed = 12,
-    MilestoneNotFound = 13,
-    DonationTooSmall = 14,
-    PreviousMilestoneNotReleased = 15,
     MilestoneAlreadyReleased = 16,
-    MilestoneNotUnlocked = 17,
-    ArithmeticOverflow = 18,
-    RefundWindowClosed = 19,
     NoRefundAvailable = 20,
+    ArithmeticOverflow = 18,
+    NotAcceptedAsset = 8,
 }
 
 #[contracttype]
