@@ -270,11 +270,19 @@ impl CampaignContract {
         }
 
         let total_raised = campaign_data.raised_amount;
-        let release_amount = match validate_sub(milestone.target_amount, campaign_data.released_amount) {
-            Ok(amt) => amt,
-            Err(_) => {
-                storage::release_lock(&env);
-                return Err(Error::ArithmeticOverflow);
+        let release_amount = if milestone_index == 0 {
+            // First milestone: release the full target amount of the first milestone
+            milestone.target_amount
+        } else {
+            // Subsequent milestones: release the difference between current and previous milestone's target
+            let previous_milestone = storage::get_milestone_data(&env, milestone_index - 1)
+                .expect("previous milestone not found");
+            match validate_sub(milestone.target_amount, previous_milestone.target_amount) {
+                Ok(amt) => amt,
+                Err(_) => {
+                    storage::release_lock(&env);
+                    return Err(Error::ArithmeticOverflow);
+                }
             }
         };
 
