@@ -694,12 +694,12 @@ impl CampaignContract {
     /// Only callable by the campaign creator.
     /// Sets the campaign status to Failed and records the end time for refund window calculation.
     pub fn fail_campaign(env: Env) -> Result<(), Error> {
-        let mut campaign_data = expect_campaign_data(&env);
+        let mut campaign_data = get_campaign_data(&env)?;
         campaign_data.creator.require_auth();
 
         // Check that contract is not frozen
         if storage::is_frozen(&env) {
-            return Err(Error::Unauthorized);
+            return Err(Error::ContractFrozen);
         }
 
         // Only allow failure from Active or GoalReached status
