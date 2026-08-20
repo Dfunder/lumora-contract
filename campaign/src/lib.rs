@@ -388,7 +388,7 @@ impl CampaignContract {
                         },
                         Err(_) => {
                             storage::release_lock(&env);
-                            return Err(Error::ArithmeticOverflow);
+                            return Err(Error::Overflow);
                         }
                     }
                 };
