@@ -162,3 +162,13 @@ pub fn set_min_donation_amount(env: &Env, amount: &i128) {
 pub fn get_min_donation_amount(env: &Env) -> Option<i128> {
     env.storage().persistent().get(&DataKey::MinDonationAmount)
 }
+
+pub fn set_campaign_end_time(env: &Env, timestamp: u64) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::CampaignEndTime, &timestamp);
+}
+
+pub fn get_campaign_end_time(env: &Env) -> Option<u64> {
+    env.storage().persistent().get(&DataKey::CampaignEndTime)
+}

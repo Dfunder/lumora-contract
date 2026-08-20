@@ -1,9 +1,9 @@
 #![no_std]
 
 use common::{
-    is_asset_accepted, validate_add, validate_div, validate_mul, validate_sub, CampaignStatus,
-    MilestoneStatus, AssetInfo, ErrorCode, check_creator_auth, check_contract_not_frozen,
-    check_contract_not_locked, check_not_already_initialized,
+    check_contract_not_frozen, check_contract_not_locked, check_creator_auth,
+    check_not_already_initialized, is_asset_accepted, validate_add, validate_div, validate_mul,
+    validate_sub, AssetInfo, CampaignStatus, ErrorCode, MilestoneStatus,
 };
 use soroban_sdk::{
     contract, contractimpl, contracttype, symbol_short, Address, BytesN, Env, Symbol, Vec,
@@ -12,6 +12,7 @@ use soroban_sdk::{
 pub mod storage;
 
 const MAX_MILESTONES: u32 = 5;
+const REFUND_WINDOW: u64 = 30 * 24 * 60 * 60; // 30 days in seconds
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -34,6 +35,8 @@ pub enum Error {
     MilestoneAlreadyReleased = 16,
     MilestoneNotUnlocked = 17,
     ArithmeticOverflow = 18,
+    RefundWindowClosed = 19,
+    NoRefundAvailable = 20,
 }
 
 #[contracttype]
@@ -50,9 +53,8 @@ pub enum DataKey {
     Frozen,
     XlmTokenAddress,
     MinDonationAmount,
+    CampaignEndTime,
 }
-
-
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -120,8 +122,6 @@ fn get_token_address(env: &Env, asset: &AssetInfo) -> Address {
         AssetInfo::Token(address) => address.clone(),
     }
 }
-
-
 
 #[contract]
 pub struct CampaignContract;
@@ -270,13 +270,14 @@ impl CampaignContract {
         }
 
         let total_raised = campaign_data.raised_amount;
-        let release_amount = match validate_sub(milestone.target_amount, campaign_data.released_amount) {
-            Ok(amt) => amt,
-            Err(_) => {
-                storage::release_lock(&env);
-                return Err(Error::ArithmeticOverflow);
-            }
-        };
+        let release_amount =
+            match validate_sub(milestone.target_amount, campaign_data.released_amount) {
+                Ok(amt) => amt,
+                Err(_) => {
+                    storage::release_lock(&env);
+                    return Err(Error::ArithmeticOverflow);
+                }
+            };
 
         let mut total_released_this_milestone: i128 = 0;
 
@@ -309,13 +310,14 @@ impl CampaignContract {
                 };
 
                 if per_asset_release > 0 {
-                    total_released_this_milestone = match validate_add(total_released_this_milestone, per_asset_release) {
-                        Ok(amt) => amt,
-                        Err(_) => {
-                            storage::release_lock(&env);
-                            return Err(Error::ArithmeticOverflow);
-                        }
-                    };
+                    total_released_this_milestone =
+                        match validate_add(total_released_this_milestone, per_asset_release) {
+                            Ok(amt) => amt,
+                            Err(_) => {
+                                storage::release_lock(&env);
+                                return Err(Error::ArithmeticOverflow);
+                            }
+                        };
 
                     let token_address = get_token_address(&env, &asset_info);
                     let token_client = soroban_sdk::token::TokenClient::new(&env, &token_address);
@@ -343,13 +345,14 @@ impl CampaignContract {
         milestone.released_at = Some(env.ledger().timestamp());
         storage::set_milestone_data(&env, milestone_index, &milestone);
 
-        campaign_data.released_amount = match validate_add(campaign_data.released_amount, release_amount) {
-            Ok(amt) => amt,
-            Err(_) => {
-                storage::release_lock(&env);
-                return Err(Error::ArithmeticOverflow);
-            }
-        };
+        campaign_data.released_amount =
+            match validate_add(campaign_data.released_amount, release_amount) {
+                Ok(amt) => amt,
+                Err(_) => {
+                    storage::release_lock(&env);
+                    return Err(Error::ArithmeticOverflow);
+                }
+            };
         campaign_data.next_releasable_milestone += 1;
         storage::set_campaign_data(&env, &campaign_data);
 
@@ -357,13 +360,18 @@ impl CampaignContract {
         Ok(())
     }
 
-
     pub fn get_campaign_info(env: Env) -> CampaignData {
         expect_campaign_data(&env)
     }
 
     pub fn get_min_donation_amount(env: Env) -> i128 {
         storage::get_min_donation_amount(&env).unwrap_or(0)
+    }
+
+    /// Sets the XLM token address for Native asset handling.
+    /// This must be called before any donations with Native assets.
+    pub fn set_xlm_token(env: Env, token_address: Address) {
+        storage::set_xlm_token(&env, &token_address);
     }
 
     /// Returns the donor record for a given address.
@@ -399,11 +407,231 @@ impl CampaignContract {
         let data = expect_campaign_data(&env);
         let mut milestones: Vec<MilestoneData> = Vec::new(&env);
         for i in 0..data.milestone_count {
-            let milestone = storage::get_milestone_data(&env, i)
-                .expect("MilestoneNotFound");
+            let milestone = storage::get_milestone_data(&env, i).expect("MilestoneNotFound");
             milestones.push_back(milestone);
         }
         milestones
+    }
+
+    /// Checks if a donor is eligible for a refund.
+    /// Returns true if:
+    /// - The campaign is in Cancelled or Failed status
+    /// - The current time is within the refund window (30 days from campaign end)
+    /// - The donor has a non-zero donation record
+    pub fn is_refund_eligible(env: Env, donor: Address) -> bool {
+        let campaign_data = match storage::get_campaign_data(&env) {
+            Some(data) => data,
+            None => return false,
+        };
+
+        // Check campaign status - only Cancelled or Failed campaigns allow refunds
+        if !matches!(
+            campaign_data.status,
+            CampaignStatus::Cancelled | CampaignStatus::Failed
+        ) {
+            return false;
+        }
+
+        // Check refund window
+        let campaign_end_time = match storage::get_campaign_end_time(&env) {
+            Some(time) => time,
+            None => return false,
+        };
+
+        let current_time = env.ledger().timestamp();
+        if current_time > campaign_end_time + REFUND_WINDOW {
+            return false;
+        }
+
+        // Check if donor has a record with non-zero donations
+        match storage::get_donor_data(&env, &donor) {
+            Some(donor_record) => donor_record.total_donated > 0,
+            None => false,
+        }
+    }
+
+    /// Returns the remaining time in the refund window for a campaign.
+    /// Returns None if the campaign is not in a refundable state or the window has closed.
+    pub fn get_refund_window_remaining(env: Env) -> Option<u64> {
+        let campaign_data = storage::get_campaign_data(&env)?;
+
+        if !matches!(
+            campaign_data.status,
+            CampaignStatus::Cancelled | CampaignStatus::Failed
+        ) {
+            return None;
+        }
+
+        let campaign_end_time = storage::get_campaign_end_time(&env)?;
+        let current_time = env.ledger().timestamp();
+
+        if current_time > campaign_end_time + REFUND_WINDOW {
+            return None;
+        }
+
+        Some((campaign_end_time + REFUND_WINDOW) - current_time)
+    }
+
+    /// Refunds the donor's exact contributions per asset.
+    /// This function:
+    /// - Checks refund eligibility and window
+    /// - Refunds each asset exactly as contributed (no rounding losses)
+    /// - Clears the donor's record after successful refund
+    /// - Panics with RefundWindowClosed if called after the window
+    pub fn refund(env: Env, donor: Address) -> Result<(), Error> {
+        donor.require_auth();
+
+        // Check that contract is not frozen
+        if storage::is_frozen(&env) {
+            return Err(Error::Unauthorized);
+        }
+
+        let campaign_data = expect_campaign_data(&env);
+
+        // Check campaign status
+        if !matches!(
+            campaign_data.status,
+            CampaignStatus::Cancelled | CampaignStatus::Failed
+        ) {
+            return Err(Error::CampaignNotActive);
+        }
+
+        // Check and enforce refund window
+        let campaign_end_time = match storage::get_campaign_end_time(&env) {
+            Some(time) => time,
+            None => return Err(Error::NoRefundAvailable),
+        };
+
+        let current_time = env.ledger().timestamp();
+        if current_time > campaign_end_time + REFUND_WINDOW {
+            return Err(Error::RefundWindowClosed);
+        }
+
+        // Get donor record
+        let donor_record = match storage::get_donor_data(&env, &donor) {
+            Some(record) => record,
+            None => return Err(Error::NoRefundAvailable),
+        };
+
+        if donor_record.total_donated == 0 {
+            return Err(Error::NoRefundAvailable);
+        }
+
+        // Refund each asset exactly as contributed (no rounding)
+        let mut total_refunded: i128 = 0;
+        for per_asset in donor_record.per_asset.iter() {
+            if per_asset.amount > 0 {
+                let token_address = get_token_address(&env, &per_asset.asset);
+                let token_client = soroban_sdk::token::TokenClient::new(&env, &token_address);
+
+                token_client.transfer(&env.current_contract_address(), &donor, &per_asset.amount);
+
+                total_refunded = match validate_add(total_refunded, per_asset.amount) {
+                    Ok(amt) => amt,
+                    Err(_) => return Err(Error::ArithmeticOverflow),
+                };
+
+                env.events().publish(
+                    (symbol_short!("refund"),),
+                    (donor.clone(), per_asset.amount, per_asset.asset.clone()),
+                );
+            }
+        }
+
+        // Clear donor record after successful refund
+        storage::set_donor_data(
+            &env,
+            &donor,
+            &DonorRecord {
+                donor: donor.clone(),
+                total_donated: 0,
+                per_asset: Vec::new(&env),
+                last_donation_time: 0,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Cancels the campaign and starts the refund window.
+    /// Only callable by the campaign creator.
+    /// Sets the campaign status to Cancelled and records the end time for refund window calculation.
+    pub fn cancel_campaign(env: Env) -> Result<(), Error> {
+        let mut campaign_data = expect_campaign_data(&env);
+        campaign_data.creator.require_auth();
+
+        // Check that contract is not frozen
+        if storage::is_frozen(&env) {
+            return Err(Error::Unauthorized);
+        }
+
+        // Only allow cancellation from Active or GoalReached status
+        if !matches!(
+            campaign_data.status,
+            CampaignStatus::Active | CampaignStatus::GoalReached
+        ) {
+            return Err(Error::CampaignNotActive);
+        }
+
+        // Update campaign status
+        campaign_data.status = CampaignStatus::Cancelled;
+        storage::set_campaign_data(&env, &campaign_data);
+
+        // Set campaign end time to start refund window
+        let current_time = env.ledger().timestamp();
+        storage::set_campaign_end_time(&env, current_time);
+
+        env.events().publish(
+            (symbol_short!("cancelled"),),
+            (campaign_data.creator.clone(), current_time),
+        );
+
+        Ok(())
+    }
+
+    /// Returns the total refundable amount for a donor.
+    /// This is the sum of all per-asset contributions that haven't been refunded yet.
+    pub fn get_refundable_amount(env: Env, donor: Address) -> i128 {
+        match storage::get_donor_data(&env, &donor) {
+            Some(donor_record) => donor_record.total_donated,
+            None => 0,
+        }
+    }
+
+    /// Marks the campaign as failed and starts the refund window.
+    /// Only callable by the campaign creator.
+    /// Sets the campaign status to Failed and records the end time for refund window calculation.
+    pub fn fail_campaign(env: Env) -> Result<(), Error> {
+        let mut campaign_data = expect_campaign_data(&env);
+        campaign_data.creator.require_auth();
+
+        // Check that contract is not frozen
+        if storage::is_frozen(&env) {
+            return Err(Error::Unauthorized);
+        }
+
+        // Only allow failure from Active or GoalReached status
+        if !matches!(
+            campaign_data.status,
+            CampaignStatus::Active | CampaignStatus::GoalReached
+        ) {
+            return Err(Error::CampaignNotActive);
+        }
+
+        // Update campaign status
+        campaign_data.status = CampaignStatus::Failed;
+        storage::set_campaign_data(&env, &campaign_data);
+
+        // Set campaign end time to start refund window
+        let current_time = env.ledger().timestamp();
+        storage::set_campaign_end_time(&env, current_time);
+
+        env.events().publish(
+            (symbol_short!("failed"),),
+            (campaign_data.creator.clone(), current_time),
+        );
+
+        Ok(())
     }
 
     pub fn donate(env: Env, donor: Address, amount: i128, asset: AssetInfo) -> Result<(), Error> {
@@ -464,10 +692,8 @@ impl CampaignContract {
                 {
                     milestone.status = MilestoneStatus::Unlocked;
                     storage::set_milestone_data(&env, i, &milestone);
-                    env.events().publish(
-                        (symbol_short!("milestone"),),
-                        (i, milestone.target_amount),
-                    );
+                    env.events()
+                        .publish((symbol_short!("milestone"),), (i, milestone.target_amount));
                 }
             }
         }
