@@ -445,8 +445,8 @@ impl CampaignContract {
         Ok(())
     }
 
-    pub fn get_campaign_info(env: Env) -> CampaignData {
-        expect_campaign_data(&env)
+    pub fn get_campaign_info(env: Env) -> Result<CampaignData, Error> {
+        get_campaign_data(&env)
     }
 
     pub fn get_min_donation_amount(env: Env) -> i128 {
@@ -475,13 +475,14 @@ impl CampaignContract {
             .unwrap_or(0)
     }
 
-    pub fn require_creator(env: Env) {
-        let data = expect_campaign_data(&env);
+    pub fn require_creator(env: Env) -> Result<(), Error> {
+        let data = get_campaign_data(&env)?;
         data.creator.require_auth();
+        Ok(())
     }
 
     pub fn get_milestone(env: Env, index: u32) -> Result<MilestoneData, Error> {
-        let data = expect_campaign_data(&env);
+        let data = get_campaign_data(&env)?;
         if index >= data.milestone_count {
             return Err(Error::MilestoneNotFound);
         }
@@ -613,7 +614,7 @@ impl CampaignContract {
 
                 total_refunded = match validate_add(total_refunded, per_asset.amount) {
                     Ok(amt) => amt,
-                    Err(_) => return Err(Error::ArithmeticOverflow),
+                    Err(_) => return Err(Error::Overflow),
                 };
 
                 env.events().publish(
@@ -755,7 +756,7 @@ impl CampaignContract {
         }
 
         if !is_asset_accepted(&data.accepted_assets, &asset) {
-            return Err(Error::NotAcceptedAsset);
+            return Err(Error::AssetNotAccepted);
         }
 
         let token_address = get_token_address(&env, &asset);
