@@ -270,14 +270,21 @@ impl CampaignContract {
         }
 
         let total_raised = campaign_data.raised_amount;
-        let release_amount =
-            match validate_sub(milestone.target_amount, campaign_data.released_amount) {
+        let release_amount = if milestone_index == 0 {
+            // First milestone: release the full target amount of the first milestone
+            milestone.target_amount
+        } else {
+            // Subsequent milestones: release the difference between current and previous milestone's target
+            let previous_milestone = storage::get_milestone_data(&env, milestone_index - 1)
+                .expect("previous milestone not found");
+            match validate_sub(milestone.target_amount, previous_milestone.target_amount) {
                 Ok(amt) => amt,
                 Err(_) => {
                     storage::release_lock(&env);
                     return Err(Error::ArithmeticOverflow);
                 }
-            };
+            }
+        };
 
         let mut total_released_this_milestone: i128 = 0;
 
@@ -321,20 +328,21 @@ impl CampaignContract {
 
                     let token_address = get_token_address(&env, &asset_info);
                     let token_client = soroban_sdk::token::TokenClient::new(&env, &token_address);
-                    let tx_hash = BytesN::from_array(&env, &[0u8; 32]);
                     token_client.transfer(
                         &env.current_contract_address(),
                         &recipient,
                         &per_asset_release,
                     );
                     env.events().publish(
-                        (symbol_short!("released"),),
                         (
+                            Symbol::new(&env, "milestone_released"),
                             milestone_index,
-                            per_asset_release,
-                            asset_info,
+                            asset_info.clone(),
                             recipient.clone(),
-                            tx_hash,
+                        ),
+                        (
+                            per_asset_release,
+                            env.ledger().timestamp(),
                         ),
                     );
                 }
