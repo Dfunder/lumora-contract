@@ -17,26 +17,98 @@ const REFUND_WINDOW: u64 = 30 * 24 * 60 * 60; // 30 days in seconds
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Error {
+    /// Thrown when an unauthorized caller attempts to perform an operation that requires
+    /// elevated permissions (e.g., admin-only actions, creator-only actions).
+    /// Recoverable: This is a bad input issue - only the authorized caller can retry.
     Unauthorized = 1,
+    
+    /// Thrown when initialize() is called more than once on a contract.
+    /// Terminal: This indicates a re-initialization attack or incorrect usage.
     AlreadyInitialized = 2,
+    
+    /// Thrown when a campaign is interacted with before it has been initialized.
+    /// Recoverable: The caller must initialize the contract first before performing other operations.
+    NotInitialized = 21,
+    
+    /// Thrown when the goal amount provided during initialization is <= 0.
+    /// Recoverable: Fix the goal amount to a positive value and retry initialization.
     InvalidGoalAmount = 3,
+    
+    /// Thrown when the end time provided during initialization is in the past.
+    /// Recoverable: Fix the end time to a future timestamp and retry initialization.
     InvalidEndTime = 4,
+    
+    /// Thrown when no accepted assets are provided during initialization.
+    /// Recoverable: Provide at least one accepted asset and retry initialization.
     NoAcceptedAssets = 5,
+    
+    /// Thrown when milestones provided during initialization are invalid (wrong count, non-increasing amounts, last milestone != goal).
+    /// Recoverable: Fix the milestones to meet the validation criteria and retry initialization.
     InvalidMilestones = 6,
+    
+    /// Thrown when an invalid amount (<=0) is provided for an operation.
+    /// Recoverable: Provide a valid positive amount and retry.
     InvalidAmount = 7,
-    NotAcceptedAsset = 8,
+    
+    /// Thrown when an asset that is not in the campaign's accepted assets list is used in a donation.
+    /// Recoverable: Use an accepted asset or add the asset to the campaign's accepted assets list.
+    AssetNotAccepted = 8,
+    
+    /// Thrown when an operation is attempted on a campaign that is not in an active state.
+    /// Recoverable: Verify the campaign's current status before attempting the operation.
     CampaignNotActive = 9,
+    
+    /// Thrown when an operation is attempted on a campaign that has passed its end time.
+    /// Recoverable: Cannot be retried - campaign has concluded.
     CampaignEnded = 10,
+    
+    /// Thrown when attempting to cancel a campaign that has remaining funds in the contract.
+    /// Recoverable: Withdraw or distribute all funds before attempting to cancel.
+    CannotCancelWithFunds = 22,
+    
+    /// Thrown when a refund is attempted after the refund window (30 days after campaign end) has closed.
+    /// Recoverable: Cannot be retried - refund window has expired.
+    RefundWindowClosed = 19,
+    
+    /// Thrown when a milestone with the specified index does not exist on the campaign.
+    /// Recoverable: Verify the milestone index exists before attempting the operation.
+    MilestoneNotFound = 13,
+    
+    /// Thrown when attempting to release a milestone that is still in Locked status.
+    /// Recoverable: Wait for the milestone to be unlocked (when enough funds are raised) before attempting to release.
+    MilestoneNotUnlocked = 17,
+    
+    /// Thrown when attempting to release a milestone out of order - a previous milestone has not been released.
+    /// Recoverable: Release milestones in sequential order.
+    PreviousMilestoneNotReleased = 15,
+    
+    /// Thrown when a donation is less than the campaign's minimum donation amount.
+    /// Recoverable: Increase the donation amount to meet the minimum and retry.
+    DonationTooSmall = 14,
+    
+    /// Thrown when an arithmetic operation would cause an overflow or underflow.
+    /// Terminal: This indicates a critical bug in the contract's accounting logic.
+    Overflow = 18,
+    
+    /// Thrown when a reentrant call is detected on the contract.
+    /// Terminal: This indicates a reentrancy attack or incorrect usage of reentrant calls.
+    Reentrant = 23,
+    
+    /// Thrown when an operation is attempted on a frozen contract.
+    /// Recoverable: Cannot be retried - contract is frozen and cannot accept modifications.
+    ContractFrozen = 24,
+    
+    /// Thrown when there is insufficient balance in the contract to perform an operation (e.g., withdrawal, transfer).
+    /// Recoverable: Ensure the contract has enough funds before attempting the operation.
+    InsufficientContractBalance = 25,
+    
+    // Legacy errors maintained for backward compatibility
     CampaignCancelled = 11,
     DonationFailed = 12,
-    MilestoneNotFound = 13,
-    DonationTooSmall = 14,
-    PreviousMilestoneNotReleased = 15,
     MilestoneAlreadyReleased = 16,
-    MilestoneNotUnlocked = 17,
-    ArithmeticOverflow = 18,
-    RefundWindowClosed = 19,
     NoRefundAvailable = 20,
+    ArithmeticOverflow = 18,
+    NotAcceptedAsset = 8,
 }
 
 #[contracttype]
@@ -112,14 +184,14 @@ pub struct DonorRecord {
     pub last_donation_time: u64,
 }
 
-fn expect_campaign_data(env: &Env) -> CampaignData {
-    storage::get_campaign_data(env).expect("campaign not initialized")
+fn get_campaign_data(env: &Env) -> Result<CampaignData, Error> {
+    storage::get_campaign_data(env).ok_or(Error::NotInitialized)
 }
 
-fn get_token_address(env: &Env, asset: &AssetInfo) -> Address {
+fn get_token_address(env: &Env, asset: &AssetInfo) -> Result<Address, Error> {
     match asset {
-        AssetInfo::Native => storage::get_xlm_token(env).expect("XLM token address not set"),
-        AssetInfo::Token(address) => address.clone(),
+        AssetInfo::Native => storage::get_xlm_token(env).ok_or(Error::NotInitialized),
+        AssetInfo::Token(address) => Ok(address.clone()),
     }
 }
 
@@ -226,21 +298,21 @@ impl CampaignContract {
         milestone_index: u32,
         recipient: Address,
     ) -> Result<(), Error> {
-        let mut campaign_data = expect_campaign_data(&env);
+        let mut campaign_data = get_campaign_data(&env)?;
         campaign_data.creator.require_auth();
 
         // Check that contract is not frozen
         if storage::is_frozen(&env) {
-            return Err(Error::Unauthorized);
+            return Err(Error::ContractFrozen);
         }
 
         // Check that contract is not locked
         if storage::is_locked(&env) {
-            return Err(Error::Unauthorized);
+            return Err(Error::Reentrant);
         }
 
         // Acquire lock to prevent concurrent modifications
-        storage::acquire_lock(&env).map_err(|_| Error::Unauthorized)?;
+        storage::acquire_lock(&env)?;
 
         // Verify creator is the only one who can release milestones
         if campaign_data.creator != env.current_contract_address() {
@@ -275,13 +347,18 @@ impl CampaignContract {
             milestone.target_amount
         } else {
             // Subsequent milestones: release the difference between current and previous milestone's target
-            let previous_milestone = storage::get_milestone_data(&env, milestone_index - 1)
-                .expect("previous milestone not found");
+            let previous_milestone = match storage::get_milestone_data(&env, milestone_index - 1) {
+                Some(m) => m,
+                None => {
+                    storage::release_lock(&env);
+                    return Err(Error::MilestoneNotFound);
+                }
+            };
             match validate_sub(milestone.target_amount, previous_milestone.target_amount) {
                 Ok(amt) => amt,
                 Err(_) => {
                     storage::release_lock(&env);
-                    return Err(Error::ArithmeticOverflow);
+                    return Err(Error::Overflow);
                 }
             }
         };
@@ -297,7 +374,7 @@ impl CampaignContract {
                         Ok(amt) => amt,
                         Err(_) => {
                             storage::release_lock(&env);
-                            return Err(Error::ArithmeticOverflow);
+                            return Err(Error::Overflow);
                         }
                     }
                 } else {
@@ -306,12 +383,12 @@ impl CampaignContract {
                             Ok(quot) => quot,
                             Err(_) => {
                                 storage::release_lock(&env);
-                                return Err(Error::ArithmeticOverflow);
+                                return Err(Error::Overflow);
                             }
                         },
                         Err(_) => {
                             storage::release_lock(&env);
-                            return Err(Error::ArithmeticOverflow);
+                            return Err(Error::Overflow);
                         }
                     }
                 };
@@ -322,7 +399,7 @@ impl CampaignContract {
                             Ok(amt) => amt,
                             Err(_) => {
                                 storage::release_lock(&env);
-                                return Err(Error::ArithmeticOverflow);
+                                return Err(Error::Overflow);
                             }
                         };
 
@@ -358,7 +435,7 @@ impl CampaignContract {
                 Ok(amt) => amt,
                 Err(_) => {
                     storage::release_lock(&env);
-                    return Err(Error::ArithmeticOverflow);
+                    return Err(Error::Overflow);
                 }
             };
         campaign_data.next_releasable_milestone += 1;
@@ -368,8 +445,8 @@ impl CampaignContract {
         Ok(())
     }
 
-    pub fn get_campaign_info(env: Env) -> CampaignData {
-        expect_campaign_data(&env)
+    pub fn get_campaign_info(env: Env) -> Result<CampaignData, Error> {
+        get_campaign_data(&env)
     }
 
     pub fn get_min_donation_amount(env: Env) -> i128 {
@@ -398,27 +475,28 @@ impl CampaignContract {
             .unwrap_or(0)
     }
 
-    pub fn require_creator(env: Env) {
-        let data = expect_campaign_data(&env);
+    pub fn require_creator(env: Env) -> Result<(), Error> {
+        let data = get_campaign_data(&env)?;
         data.creator.require_auth();
+        Ok(())
     }
 
     pub fn get_milestone(env: Env, index: u32) -> Result<MilestoneData, Error> {
-        let data = expect_campaign_data(&env);
+        let data = get_campaign_data(&env)?;
         if index >= data.milestone_count {
             return Err(Error::MilestoneNotFound);
         }
         storage::get_milestone_data(&env, index).ok_or(Error::MilestoneNotFound)
     }
 
-    pub fn get_all_milestones(env: Env) -> Vec<MilestoneData> {
-        let data = expect_campaign_data(&env);
+    pub fn get_all_milestones(env: Env) -> Result<Vec<MilestoneData>, Error> {
+        let data = get_campaign_data(&env)?;
         let mut milestones: Vec<MilestoneData> = Vec::new(&env);
         for i in 0..data.milestone_count {
-            let milestone = storage::get_milestone_data(&env, i).expect("MilestoneNotFound");
+            let milestone = storage::get_milestone_data(&env, i).ok_or(Error::MilestoneNotFound)?;
             milestones.push_back(milestone);
         }
-        milestones
+        Ok(milestones)
     }
 
     /// Checks if a donor is eligible for a refund.
@@ -491,10 +569,10 @@ impl CampaignContract {
 
         // Check that contract is not frozen
         if storage::is_frozen(&env) {
-            return Err(Error::Unauthorized);
+            return Err(Error::ContractFrozen);
         }
 
-        let campaign_data = expect_campaign_data(&env);
+        let campaign_data = get_campaign_data(&env)?;
 
         // Check campaign status
         if !matches!(
@@ -529,14 +607,14 @@ impl CampaignContract {
         let mut total_refunded: i128 = 0;
         for per_asset in donor_record.per_asset.iter() {
             if per_asset.amount > 0 {
-                let token_address = get_token_address(&env, &per_asset.asset);
+                let token_address = get_token_address(&env, &per_asset.asset)?;
                 let token_client = soroban_sdk::token::TokenClient::new(&env, &token_address);
 
                 token_client.transfer(&env.current_contract_address(), &donor, &per_asset.amount);
 
                 total_refunded = match validate_add(total_refunded, per_asset.amount) {
                     Ok(amt) => amt,
-                    Err(_) => return Err(Error::ArithmeticOverflow),
+                    Err(_) => return Err(Error::Overflow),
                 };
 
                 env.events().publish(
@@ -565,12 +643,12 @@ impl CampaignContract {
     /// Only callable by the campaign creator.
     /// Sets the campaign status to Cancelled and records the end time for refund window calculation.
     pub fn cancel_campaign(env: Env) -> Result<(), Error> {
-        let mut campaign_data = expect_campaign_data(&env);
+        let mut campaign_data = get_campaign_data(&env)?;
         campaign_data.creator.require_auth();
 
         // Check that contract is not frozen
         if storage::is_frozen(&env) {
-            return Err(Error::Unauthorized);
+            return Err(Error::ContractFrozen);
         }
 
         // Only allow cancellation from Active or GoalReached status
@@ -579,6 +657,12 @@ impl CampaignContract {
             CampaignStatus::Active | CampaignStatus::GoalReached
         ) {
             return Err(Error::CampaignNotActive);
+        }
+
+        // Prevent cancellation if there are still unreleased funds in the contract
+        let remaining_funds = validate_sub(campaign_data.raised_amount, campaign_data.released_amount)?;
+        if remaining_funds > 0 {
+            return Err(Error::CannotCancelWithFunds);
         }
 
         // Update campaign status
@@ -610,12 +694,12 @@ impl CampaignContract {
     /// Only callable by the campaign creator.
     /// Sets the campaign status to Failed and records the end time for refund window calculation.
     pub fn fail_campaign(env: Env) -> Result<(), Error> {
-        let mut campaign_data = expect_campaign_data(&env);
+        let mut campaign_data = get_campaign_data(&env)?;
         campaign_data.creator.require_auth();
 
         // Check that contract is not frozen
         if storage::is_frozen(&env) {
-            return Err(Error::Unauthorized);
+            return Err(Error::ContractFrozen);
         }
 
         // Only allow failure from Active or GoalReached status
@@ -647,12 +731,12 @@ impl CampaignContract {
 
         // Check that contract is not frozen
         if storage::is_frozen(&env) {
-            return Err(Error::Unauthorized);
+            return Err(Error::ContractFrozen);
         }
 
         // Check that contract is not locked
         if storage::is_locked(&env) {
-            return Err(Error::Unauthorized);
+            return Err(Error::Reentrant);
         }
 
         if amount <= 0 {
@@ -664,7 +748,7 @@ impl CampaignContract {
             return Err(Error::DonationTooSmall);
         }
 
-        let mut data = expect_campaign_data(&env);
+        let mut data = get_campaign_data(&env)?;
 
         if env.ledger().timestamp() > data.end_time {
             return Err(Error::CampaignEnded);
@@ -678,10 +762,10 @@ impl CampaignContract {
         }
 
         if !is_asset_accepted(&data.accepted_assets, &asset) {
-            return Err(Error::NotAcceptedAsset);
+            return Err(Error::AssetNotAccepted);
         }
 
-        let token_address = get_token_address(&env, &asset);
+        let token_address = get_token_address(&env, &asset)?;
         let token_client = soroban_sdk::token::TokenClient::new(&env, &token_address);
         token_client.transfer(&donor, &env.current_contract_address(), &amount);
 

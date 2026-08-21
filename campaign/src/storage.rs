@@ -89,7 +89,7 @@ pub fn is_locked(env: &Env) -> bool {
 /// Must be paired with a corresponding call to `release_lock()`.
 pub fn acquire_lock(env: &Env) -> Result<(), crate::Error> {
     if is_locked(env) {
-        return Err(crate::Error::Unauthorized);
+        return Err(crate::Error::Reentrant);
     }
     set_locked(env, true);
     Ok(())
