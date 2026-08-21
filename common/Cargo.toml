@@ -5,3 +5,9 @@ edition = "2021"
 
 [dependencies]
 soroban-sdk = { workspace = true }
+
+[features]
+# soroban-sdk-macros 20.x emits `#[cfg(feature = "testutils")]` into whichever
+# crate invokes its macros. Enabling this feature gives the shared contracttypes
+# their test-only helpers so dependent crates can use them in tests.
+testutils = ["soroban-sdk/testutils"]
