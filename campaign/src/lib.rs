@@ -803,6 +803,69 @@ impl CampaignContract {
         Ok(())
     }
 
+    /// Ends the campaign early at the creator's discretion.
+    /// Only callable by the campaign creator while the campaign is Active or
+    /// GoalReached; fails if the campaign is already Ended or Cancelled.
+    /// Ending does not prevent the final milestone from being released:
+    /// `release_milestone` validates milestone state, not campaign status.
+    /// Does not start the refund window (ending is not a failure mode), so the
+    /// stored end time is left untouched.
+    pub fn end_campaign(env: Env) -> Result<(), Error> {
+        let mut campaign_data = get_campaign_data(&env)?;
+        campaign_data.creator.require_auth();
+
+        // Check that contract is not frozen
+        if storage::is_frozen(&env) {
+            return Err(Error::ContractFrozen);
+        }
+
+        // Only allow ending from Active or GoalReached status
+        if !matches!(
+            campaign_data.status,
+            CampaignStatus::Active | CampaignStatus::GoalReached
+        ) {
+            return Err(Error::CampaignNotActive);
+        }
+
+        // Update campaign status
+        campaign_data.status = CampaignStatus::Ended;
+        storage::set_campaign_data(&env, &campaign_data);
+
+        env.events().publish(
+            (Symbol::new(&env, "campaign_ended"),),
+            (campaign_data.creator.clone(), env.ledger().timestamp()),
+        );
+
+        Ok(())
+    }
+
+    /// Permissionlessly transitions an expired-but-still-Active campaign to
+    /// Ended and emits the `campaign_ended` event.
+    ///
+    /// Anyone may call this: deadline enforcement must not depend on the
+    /// creator's cooperation. Without a permissionless transition, a creator
+    /// could simply refuse to act and keep a dead campaign nominally Active,
+    /// blocking downstream flows that key off the status. This call is
+    /// idempotent - calling it on a non-expired or already-ended campaign is a
+    /// no-op returning Ok.
+    pub fn update_status(env: Env) -> Result<(), Error> {
+        let mut campaign_data = get_campaign_data(&env)?;
+
+        if env.ledger().timestamp() > campaign_data.end_time
+            && campaign_data.status == CampaignStatus::Active
+        {
+            campaign_data.status = CampaignStatus::Ended;
+            storage::set_campaign_data(&env, &campaign_data);
+
+            env.events().publish(
+                (Symbol::new(&env, "campaign_ended"),),
+                (campaign_data.creator.clone(), env.ledger().timestamp()),
+            );
+        }
+
+        Ok(())
+    }
+
     pub fn donate(env: Env, donor: Address, amount: i128, asset: AssetInfo) -> Result<(), Error> {
         donor.require_auth();
 
@@ -828,6 +891,17 @@ impl CampaignContract {
         let mut data = get_campaign_data(&env)?;
 
         if env.ledger().timestamp() > data.end_time {
+            // A donation attempt against an expired, still-Active campaign
+            // triggers the same transition as `update_status` so the status
+            // never stays Active past the deadline.
+            if data.status == CampaignStatus::Active {
+                data.status = CampaignStatus::Ended;
+                storage::set_campaign_data(&env, &data);
+                env.events().publish(
+                    (Symbol::new(&env, "campaign_ended"),),
+                    (data.creator.clone(), env.ledger().timestamp()),
+                );
+            }
             return Err(Error::CampaignEnded);
         }
 
