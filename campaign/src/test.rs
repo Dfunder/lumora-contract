@@ -3,8 +3,8 @@ use crate::{
     MilestoneInput, MilestoneStatus,
 };
 use common::AssetInfo;
-use soroban_sdk::testutils::{Address as _, Events as _};
-use soroban_sdk::{Address, BytesN, Env, Symbol};
+use soroban_sdk::testutils::{Address as _, Events as _, Ledger as _};
+use soroban_sdk::{Address, BytesN, Env, IntoVal as _, Symbol};
 
 fn desc_hash(env: &Env, bytes: [u8; 32]) -> BytesN<32> {
     BytesN::from_array(env, &bytes)
@@ -1231,4 +1231,157 @@ fn test_get_campaign_status_days_remaining() {
     env.ledger().with_mut(|l| l.timestamp = end_time + 3 * day);
     let (_, days_remaining) = client.get_campaign_status();
     assert_eq!(days_remaining, -3);
+}
+
+#[test]
+fn test_end_campaign_by_creator() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
+
+    let creator = Address::generate(&env);
+    let goal_amount = 10_000;
+    let end_time = env.ledger().timestamp() + 1000;
+    let accepted_assets = soroban_sdk::vec![&env, AssetInfo::Native];
+    let milestones = soroban_sdk::vec![
+        &env,
+        MilestoneInput {
+            target_amount: 10_000,
+            description_hash: desc_hash(&env, [0; 32]),
+        },
+    ];
+    let min_donation = 100;
+
+    client.initialize(
+        &creator,
+        &goal_amount,
+        &end_time,
+        &accepted_assets,
+        &milestones,
+        &min_donation,
+    );
+
+    // Creator ends the campaign before the deadline
+    client.end_campaign();
+    assert_eq!(client.get_campaign_info().status, CampaignStatus::Ended);
+
+    // Ending again fails because the campaign is already Ended
+    let result = client.try_end_campaign();
+    assert_eq!(result, Err(Ok(Error::CampaignNotActive)));
+}
+
+#[test]
+fn test_update_status_transitions_expired_active_campaign() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
+
+    let creator = Address::generate(&env);
+    let goal_amount = 10_000;
+    let end_time = env.ledger().timestamp() + 1000;
+    let accepted_assets = soroban_sdk::vec![&env, AssetInfo::Native];
+    let milestones = soroban_sdk::vec![
+        &env,
+        MilestoneInput {
+            target_amount: 10_000,
+            description_hash: desc_hash(&env, [0; 32]),
+        },
+    ];
+    let min_donation = 100;
+
+    client.initialize(
+        &creator,
+        &goal_amount,
+        &end_time,
+        &accepted_assets,
+        &milestones,
+        &min_donation,
+    );
+
+    // Advance past the deadline: status stays Active until someone acts
+    env.ledger().with_mut(|l| l.timestamp = end_time + 1);
+    assert_eq!(client.get_campaign_info().status, CampaignStatus::Active);
+
+    // A random non-creator account can trigger the transition
+    let anyone = Address::generate(&env);
+    let client_anyone = CampaignContractClient::new(&env, &contract_id);
+    let _ = anyone;
+    client_anyone.update_status();
+    assert_eq!(client.get_campaign_info().status, CampaignStatus::Ended);
+
+    // Idempotent: calling again on an already-Ended campaign is a no-op
+    client.update_status();
+    assert_eq!(client.get_campaign_info().status, CampaignStatus::Ended);
+}
+
+#[test]
+fn test_update_status_before_deadline_is_noop() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
+
+    let creator = Address::generate(&env);
+    let goal_amount = 10_000;
+    let end_time = env.ledger().timestamp() + 1000;
+    let accepted_assets = soroban_sdk::vec![&env, AssetInfo::Native];
+    let milestones = soroban_sdk::vec![
+        &env,
+        MilestoneInput {
+            target_amount: 10_000,
+            description_hash: desc_hash(&env, [0; 32]),
+        },
+    ];
+    let min_donation = 100;
+
+    client.initialize(
+        &creator,
+        &goal_amount,
+        &end_time,
+        &accepted_assets,
+        &milestones,
+        &min_donation,
+    );
+
+    // Before the deadline update_status must not change anything
+    client.update_status();
+    assert_eq!(client.get_campaign_info().status, CampaignStatus::Active);
+}
+
+#[test]
+fn test_donation_after_deadline_marks_campaign_ended() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
+
+    let creator = Address::generate(&env);
+    let goal_amount = 10_000;
+    let end_time = env.ledger().timestamp() + 1000;
+    let accepted_assets = soroban_sdk::vec![&env, AssetInfo::Native];
+    let milestones = soroban_sdk::vec![
+        &env,
+        MilestoneInput {
+            target_amount: 10_000,
+            description_hash: desc_hash(&env, [0; 32]),
+        },
+    ];
+    let min_donation = 100;
+
+    client.initialize(
+        &creator,
+        &goal_amount,
+        &end_time,
+        &accepted_assets,
+        &milestones,
+        &min_donation,
+    );
+
+    // Advance past the deadline
+    env.ledger().with_mut(|l| l.timestamp = end_time + 1);
+    assert_eq!(client.get_campaign_info().status, CampaignStatus::Active);
+
+    // Donation attempt rejects and triggers the transition to Ended
+    let donor = Address::generate(&env);
+    let result = client.try_donate(&donor, &500, &AssetInfo::Native);
+    assert_eq!(result, Err(Ok(Error::CampaignEnded)));
+    assert_eq!(client.get_campaign_info().status, CampaignStatus::Ended);
 }
