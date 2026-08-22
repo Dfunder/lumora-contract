@@ -423,9 +423,14 @@ impl CampaignContract {
                     env.events().publish(
                         (
                             Symbol::new(&env, "milestone_released"),
+                            env.current_contract_address(),
+                        ),
+                        (
                             milestone_index,
+                            per_asset_release,
                             asset_info.clone(),
                             recipient.clone(),
+                            env.ledger().timestamp(),
                         ),
                         (per_asset_release, env.ledger().timestamp()),
                     );
@@ -862,8 +867,13 @@ impl CampaignContract {
                 {
                     milestone.status = MilestoneStatus::Unlocked;
                     storage::set_milestone_data(&env, i, &milestone);
-                    env.events()
-                        .publish((symbol_short!("milestone"),), (i, milestone.target_amount));
+                    env.events().publish(
+                        (
+                            Symbol::new(&env, "milestone_unlocked"),
+                            env.current_contract_address(),
+                        ),
+                        (i, milestone.target_amount, data.raised_amount),
+                    );
                 }
             }
         }
@@ -929,5 +939,8 @@ impl CampaignContract {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod event_test;
 
 mod test;
