@@ -1,12 +1,10 @@
 use crate::{
-    Campaign, CampaignClient, CampaignData, CampaignStatus, Error, MilestoneData, MilestoneInput,
-    MilestoneStatus,
+    CampaignContract, CampaignContractClient, CampaignData, CampaignStatus, Error, MilestoneData,
+    MilestoneInput, MilestoneStatus,
 };
-use common::{AssetInfo, ErrorCode};
-use soroban_sdk::{
-    testutils::{Address as _, Events as _, Ledger as _},
-    Address, BytesN, Env, IntoVal, Symbol,
-};
+use common::AssetInfo;
+use soroban_sdk::testutils::{Address as _, Events as _};
+use soroban_sdk::{Address, BytesN, Env, Symbol};
 
 fn desc_hash(env: &Env, bytes: [u8; 32]) -> BytesN<32> {
     BytesN::from_array(env, &bytes)
@@ -51,8 +49,8 @@ fn assert_milestone_data_equal(a: &MilestoneData, b: &MilestoneData) {
 #[test]
 fn test_initialize_success() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, Campaign);
-    let client = CampaignClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
 
     let creator = Address::generate(&env);
     let goal_amount = 10_000;
@@ -95,8 +93,8 @@ fn test_initialize_success() {
 #[test]
 fn test_donate_and_check_milestones() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, Campaign);
-    let client = CampaignClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
 
     let creator = Address::generate(&env);
     let goal_amount = 10_000;
@@ -132,26 +130,27 @@ fn test_donate_and_check_milestones() {
     let campaign_data = client.get_campaign_info();
     assert_eq!(campaign_data.raised_amount, donation_amount);
 
-    let milestone1 = client.get_milestone(&0).unwrap();
+    let milestone1 = client.get_milestone(&0);
     assert_eq!(milestone1.status, MilestoneStatus::Unlocked);
 
-    let milestone2 = client.get_milestone(&1).unwrap();
+    let milestone2 = client.get_milestone(&1);
     assert_eq!(milestone2.status, MilestoneStatus::Locked);
 
     let events = env.events().all();
     let donation_event = events.last().unwrap();
+    assert_eq!(donation_event.0, contract_id);
     assert_eq!(
-        donation_event,
+        donation_event.1,
+        soroban_sdk::vec![&env, Symbol::new(&env, "donation").into_val(&env)]
+    );
+    let payload: (Address, i128, AssetInfo, i128) = donation_event.2.into_val(&env);
+    assert_eq!(
+        payload,
         (
-            contract_id.clone(),
-            (Symbol::new(&env, "donation"),).into_val(&env),
-            (
-                donor.clone(),
-                donation_amount,
-                AssetInfo::Native,
-                donation_amount
-            )
-                .into_val(&env)
+            donor.clone(),
+            donation_amount,
+            AssetInfo::Native,
+            donation_amount
         )
     );
 }
@@ -159,8 +158,8 @@ fn test_donate_and_check_milestones() {
 #[test]
 fn test_invalid_milestone_order() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, Campaign);
-    let client = CampaignClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
 
     let creator = Address::generate(&env);
     let goal_amount = 10_000;
@@ -193,8 +192,8 @@ fn test_invalid_milestone_order() {
 #[test]
 fn test_donation_below_minimum() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, Campaign);
-    let client = CampaignClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
 
     let creator = Address::generate(&env);
     let goal_amount = 10_000;
@@ -227,8 +226,8 @@ fn test_donation_below_minimum() {
 #[test]
 fn test_get_nonexistent_milestone() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, Campaign);
-    let client = CampaignClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
 
     let creator = Address::generate(&env);
     let goal_amount = 10_000;
@@ -259,8 +258,8 @@ fn test_get_nonexistent_milestone() {
 #[test]
 fn test_initialize_by_unauthorized_caller() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, Campaign);
-    let client = CampaignClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
 
     let creator = Address::generate(&env);
     let unauthorized_caller = Address::generate(&env);
@@ -276,7 +275,7 @@ fn test_initialize_by_unauthorized_caller() {
     ];
     let min_donation = 100;
 
-    let result = CampaignClient::new(&env, &contract_id).try_initialize(
+    let result = CampaignContractClient::new(&env, &contract_id).try_initialize(
         &unauthorized_caller,
         &goal_amount,
         &end_time,
@@ -290,8 +289,8 @@ fn test_initialize_by_unauthorized_caller() {
 #[test]
 fn test_re_initialization_prevented() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, Campaign);
-    let client = CampaignClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
 
     let creator = Address::generate(&env);
     let goal_amount = 10_000;
@@ -331,8 +330,8 @@ fn test_re_initialization_prevented() {
 #[test]
 fn test_release_milestone_by_non_creator() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, Campaign);
-    let client = CampaignClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
 
     let creator = Address::generate(&env);
     let non_creator = Address::generate(&env);
@@ -364,19 +363,16 @@ fn test_release_milestone_by_non_creator() {
     let donor = Address::generate(&env);
     client.donate(&donor, &6_000, &AssetInfo::Native);
 
-    let result = CampaignClient::new(&env, &contract_id).try_release_milestone(
-        &non_creator,
-        &0,
-        &non_creator,
-    );
+    let result =
+        CampaignContractClient::new(&env, &contract_id).try_release_milestone(&0, &non_creator);
     assert!(result.is_err());
 }
 
 #[test]
 fn test_release_milestones_in_order_enforced() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, Campaign);
-    let client = CampaignClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
 
     let creator = Address::generate(&env);
     let goal_amount = 15_000;
@@ -411,27 +407,27 @@ fn test_release_milestones_in_order_enforced() {
     let donor = Address::generate(&env);
     client.donate(&donor, &16_000, &AssetInfo::Native);
 
-    let result = client.try_release_milestone(&creator, &2, &creator);
+    let result = client.try_release_milestone(&2, &creator);
     assert_eq!(result, Err(Ok(Error::PreviousMilestoneNotReleased)));
 
-    let result = client.try_release_milestone(&creator, &1, &creator);
+    let result = client.try_release_milestone(&1, &creator);
     assert_eq!(result, Err(Ok(Error::PreviousMilestoneNotReleased)));
 
-    let result = client.try_release_milestone(&creator, &0, &creator);
+    let result = client.try_release_milestone(&0, &creator);
     assert!(result.is_ok());
 
-    let result = client.try_release_milestone(&creator, &1, &creator);
+    let result = client.try_release_milestone(&1, &creator);
     assert!(result.is_ok());
 
-    let result = client.try_release_milestone(&creator, &2, &creator);
+    let result = client.try_release_milestone(&2, &creator);
     assert!(result.is_ok());
 }
 
 #[test]
 fn test_cannot_release_milestone_twice() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, Campaign);
-    let client = CampaignClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
 
     let creator = Address::generate(&env);
     let goal_amount = 10_000;
@@ -458,18 +454,18 @@ fn test_cannot_release_milestone_twice() {
     let donor = Address::generate(&env);
     client.donate(&donor, &10_000, &AssetInfo::Native);
 
-    let result = client.try_release_milestone(&creator, &0, &creator);
+    let result = client.try_release_milestone(&0, &creator);
     assert!(result.is_ok());
 
-    let result = client.try_release_milestone(&creator, &0, &creator);
+    let result = client.try_release_milestone(&0, &creator);
     assert_eq!(result, Err(Ok(Error::MilestoneAlreadyReleased)));
 }
 
 #[test]
 fn test_cannot_release_locked_milestone() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, Campaign);
-    let client = CampaignClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
 
     let creator = Address::generate(&env);
     let goal_amount = 10_000;
@@ -493,15 +489,15 @@ fn test_cannot_release_locked_milestone() {
         &min_donation,
     );
 
-    let result = client.try_release_milestone(&creator, &0, &creator);
+    let result = client.try_release_milestone(&0, &creator);
     assert_eq!(result, Err(Ok(Error::MilestoneNotUnlocked)));
 }
 
 #[test]
 fn test_donate_freezes_state_validation() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, Campaign);
-    let client = CampaignClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
 
     let creator = Address::generate(&env);
     let goal_amount = 10_000;
@@ -537,8 +533,8 @@ fn test_donate_freezes_state_validation() {
 #[test]
 fn test_unauthorized_donor_cannot_donate() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, Campaign);
-    let client = CampaignClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
 
     let creator = Address::generate(&env);
     let goal_amount = 10_000;
@@ -564,7 +560,7 @@ fn test_unauthorized_donor_cannot_donate() {
 
     let unauthorized_donor = Address::generate(&env);
 
-    let result = CampaignClient::new(&env, &contract_id).try_donate(
+    let result = CampaignContractClient::new(&env, &contract_id).try_donate(
         &unauthorized_donor,
         &5_000,
         &AssetInfo::Native,
@@ -575,8 +571,8 @@ fn test_unauthorized_donor_cannot_donate() {
 #[test]
 fn test_donation_validates_campaign_status() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, Campaign);
-    let client = CampaignClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
 
     let creator = Address::generate(&env);
     let goal_amount = 10_000;
@@ -614,20 +610,56 @@ fn test_donation_validates_campaign_status() {
 /// target_amount (since `released_amount` starts at 0).
 #[test]
 fn test_release_amount_single_milestone() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
+
+    let creator = Address::generate(&env);
+    let goal_amount = 10_000;
+    let end_time = env.ledger().timestamp() + 1_000;
+    let accepted_assets = soroban_sdk::vec![&env, AssetInfo::Native];
+    let milestones = soroban_sdk::vec![
+        &env,
+        MilestoneInput {
+            target_amount: 10_000,
+            description_hash: desc_hash(&env, [0; 32]),
+        },
+    ];
+    let min_donation = 100;
+
+    client.initialize(
+        &creator,
+        &goal_amount,
+        &end_time,
+        &accepted_assets,
+        &milestones,
+        &min_donation,
+    );
+
+    let donor = Address::generate(&env);
+    client.donate(&donor, &10_000, &AssetInfo::Native);
+
+    let result = client.try_release_milestone(&0, &creator);
+    assert!(result.is_ok());
+
+    let campaign_data = client.get_campaign_info();
+    assert_eq!(campaign_data.released_amount, 10_000);
+}
+
 // ─── Refund Tests ───────────────────────────────────────────────────────────────
 
 #[test]
 fn test_multi_asset_refund_exact_calculation() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, Campaign);
-    let client = CampaignClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
 
-    let creator = Address::random(&env);
+    let creator = Address::generate(&env);
     let goal_amount = 10_000;
     let end_time = env.ledger().timestamp() + 1000;
 
     // Setup multi-asset campaign
-    let token_address = Address::random(&env);
+    let token_address = Address::generate(&env);
     let accepted_assets = soroban_sdk::vec![
         &env,
         AssetInfo::Native,
@@ -654,7 +686,7 @@ fn test_multi_asset_refund_exact_calculation() {
     // Set XLM token address for Native asset
     client.set_xlm_token(&token_address);
 
-    let donor = Address::random(&env);
+    let donor = Address::generate(&env);
 
     // Donate with multiple assets
     client.donate(&donor, &3_000, &AssetInfo::Native);
@@ -687,10 +719,10 @@ fn test_multi_asset_refund_exact_calculation() {
 #[test]
 fn test_refund_window_boundary_at_expiration() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, Campaign);
-    let client = CampaignClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
 
-    let creator = Address::random(&env);
+    let creator = Address::generate(&env);
     let goal_amount = 10_000;
     let end_time = env.ledger().timestamp() + 1000;
     let accepted_assets = soroban_sdk::vec![&env, AssetInfo::Native];
@@ -698,7 +730,7 @@ fn test_refund_window_boundary_at_expiration() {
         &env,
         MilestoneInput {
             target_amount: 10_000,
-            description_hash: [0; 32].into(),
+            description_hash: desc_hash(&env, [0; 32]),
         },
     ];
     let min_donation = 100;
@@ -712,10 +744,10 @@ fn test_refund_window_boundary_at_expiration() {
         &min_donation,
     );
 
-    let token_address = Address::random(&env);
+    let token_address = Address::generate(&env);
     client.set_xlm_token(&token_address);
 
-    let donor = Address::random(&env);
+    let donor = Address::generate(&env);
     client.donate(&donor, &5_000, &AssetInfo::Native);
 
     // Cancel campaign
@@ -740,10 +772,10 @@ fn test_refund_window_boundary_at_expiration() {
 #[test]
 fn test_refund_window_closed_after_boundary() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, Campaign);
-    let client = CampaignClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
 
-    let creator = Address::random(&env);
+    let creator = Address::generate(&env);
     let goal_amount = 10_000;
     let end_time = env.ledger().timestamp() + 1000;
     let accepted_assets = soroban_sdk::vec![&env, AssetInfo::Native];
@@ -751,7 +783,7 @@ fn test_refund_window_closed_after_boundary() {
         &env,
         MilestoneInput {
             target_amount: 10_000,
-            description_hash: [0; 32].into(),
+            description_hash: desc_hash(&env, [0; 32]),
         },
     ];
     let min_donation = 100;
@@ -765,10 +797,10 @@ fn test_refund_window_closed_after_boundary() {
         &min_donation,
     );
 
-    let token_address = Address::random(&env);
+    let token_address = Address::generate(&env);
     client.set_xlm_token(&token_address);
 
-    let donor = Address::random(&env);
+    let donor = Address::generate(&env);
     client.donate(&donor, &5_000, &AssetInfo::Native);
 
     // Cancel campaign
@@ -790,8 +822,8 @@ fn test_refund_window_closed_after_boundary() {
 #[test]
 fn test_refund_only_in_cancelled_or_failed_status() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, Campaign);
-    let client = CampaignClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
 
     let creator = Address::generate(&env);
     let goal_amount = 10_000;
@@ -815,10 +847,10 @@ fn test_refund_only_in_cancelled_or_failed_status() {
         &min_donation,
     );
 
-    let token_address = Address::random(&env);
+    let token_address = Address::generate(&env);
     client.set_xlm_token(&token_address);
 
-    let donor = Address::random(&env);
+    let donor = Address::generate(&env);
     client.donate(&donor, &5_000, &AssetInfo::Native);
 
     // Try to refund while campaign is still active - should fail
@@ -830,10 +862,10 @@ fn test_refund_only_in_cancelled_or_failed_status() {
 #[test]
 fn test_fail_campaign_starts_refund_window() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, Campaign);
-    let client = CampaignClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
 
-    let creator = Address::random(&env);
+    let creator = Address::generate(&env);
     let goal_amount = 10_000;
     let end_time = env.ledger().timestamp() + 1000;
     let accepted_assets = soroban_sdk::vec![&env, AssetInfo::Native];
@@ -841,7 +873,7 @@ fn test_fail_campaign_starts_refund_window() {
         &env,
         MilestoneInput {
             target_amount: 10_000,
-            description_hash: [0; 32].into(),
+            description_hash: desc_hash(&env, [0; 32]),
         },
     ];
     let min_donation = 100;
@@ -855,10 +887,10 @@ fn test_fail_campaign_starts_refund_window() {
         &min_donation,
     );
 
-    let token_address = Address::random(&env);
+    let token_address = Address::generate(&env);
     client.set_xlm_token(&token_address);
 
-    let donor = Address::random(&env);
+    let donor = Address::generate(&env);
     client.donate(&donor, &5_000, &AssetInfo::Native);
 
     // Fail campaign
@@ -879,8 +911,8 @@ fn test_fail_campaign_starts_refund_window() {
 #[test]
 fn test_refund_requires_donor_authorization() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, Campaign);
-    let client = CampaignClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
 
     let creator = Address::generate(&env);
     let goal_amount = 10_000;
@@ -907,18 +939,18 @@ fn test_refund_requires_donor_authorization() {
         &min_donation,
     );
 
-    let token_address = Address::random(&env);
+    let token_address = Address::generate(&env);
     client.set_xlm_token(&token_address);
 
-    let donor = Address::random(&env);
+    let donor = Address::generate(&env);
     client.donate(&donor, &5_000, &AssetInfo::Native);
 
     // Cancel campaign
     client.cancel_campaign();
 
     // Try to refund without donor authorization
-    let unauthorized_caller = Address::random(&env);
-    let result = CampaignClient::new(&env, &contract_id).try_refund(&donor);
+    let unauthorized_caller = Address::generate(&env);
+    let result = CampaignContractClient::new(&env, &contract_id).try_refund(&donor);
     // Authorization should fail at require_auth()
     assert!(result.is_err());
 }
@@ -926,10 +958,10 @@ fn test_refund_requires_donor_authorization() {
 #[test]
 fn test_get_refund_window_remaining() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, Campaign);
-    let client = CampaignClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
 
-    let creator = Address::random(&env);
+    let creator = Address::generate(&env);
     let goal_amount = 10_000;
     let end_time = env.ledger().timestamp() + 1000;
     let accepted_assets = soroban_sdk::vec![&env, AssetInfo::Native];
@@ -937,7 +969,7 @@ fn test_get_refund_window_remaining() {
         &env,
         MilestoneInput {
             target_amount: 10_000,
-            description_hash: [0; 32].into(),
+            description_hash: desc_hash(&env, [0; 32]),
         },
     ];
     let min_donation = 100;
@@ -979,10 +1011,10 @@ fn test_get_refund_window_remaining() {
 #[test]
 fn test_get_refundable_amount() {
     let env = Env::default();
-    let contract_id = env.register_contract(None, Campaign);
-    let client = CampaignClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
 
-    let creator = Address::random(&env);
+    let creator = Address::generate(&env);
     let goal_amount = 10_000;
     let end_time = env.ledger().timestamp() + 1000;
     let accepted_assets = soroban_sdk::vec![&env, AssetInfo::Native];
@@ -990,7 +1022,7 @@ fn test_get_refundable_amount() {
         &env,
         MilestoneInput {
             target_amount: 10_000,
-            description_hash: [0; 32].into(),
+            description_hash: desc_hash(&env, [0; 32]),
         },
     ];
     let min_donation = 100;
@@ -1004,10 +1036,10 @@ fn test_get_refundable_amount() {
         &min_donation,
     );
 
-    let token_address = Address::random(&env);
+    let token_address = Address::generate(&env);
     client.set_xlm_token(&token_address);
 
-    let donor = Address::random(&env);
+    let donor = Address::generate(&env);
 
     // Initially no refundable amount
     assert_eq!(client.get_refundable_amount(&donor), 0);
@@ -1020,4 +1052,183 @@ fn test_get_refundable_amount() {
     client.cancel_campaign();
     client.refund(&donor);
     assert_eq!(client.get_refundable_amount(&donor), 0);
+}
+
+#[test]
+fn test_cancel_campaign_with_one_stroop_raised_fails() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
+
+    let creator = Address::generate(&env);
+    let goal_amount = 10_000;
+    let end_time = env.ledger().timestamp() + 1000;
+    let accepted_assets = soroban_sdk::vec![&env, AssetInfo::Native];
+    let milestones = soroban_sdk::vec![
+        &env,
+        MilestoneInput {
+            target_amount: 10_000,
+            description_hash: desc_hash(&env, [0; 32]),
+        },
+    ];
+    // Minimum donation of 1 stroop so a single-stroop donation is accepted
+    let min_donation = 1;
+
+    client.initialize(
+        &creator,
+        &goal_amount,
+        &end_time,
+        &accepted_assets,
+        &milestones,
+        &min_donation,
+    );
+
+    let token_address = Address::generate(&env);
+    client.set_xlm_token(&token_address);
+
+    let donor = Address::generate(&env);
+    client.donate(&donor, &1, &AssetInfo::Native);
+
+    // Cancel must fail once any funds have been raised (even a single stroop)
+    let result = client.try_cancel_campaign();
+    assert_eq!(result, Err(Ok(Error::CannotCancelWithFunds)));
+
+    // Status remains Active
+    let campaign_data = client.get_campaign_info();
+    assert_eq!(campaign_data.status, CampaignStatus::Active);
+}
+
+#[test]
+fn test_extend_deadline_beyond_90_day_cap_fails() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
+
+    let creator = Address::generate(&env);
+    let goal_amount = 10_000;
+    let day: u64 = 24 * 60 * 60;
+    let original_end_time = env.ledger().timestamp() + 1000;
+    let accepted_assets = soroban_sdk::vec![&env, AssetInfo::Native];
+    let milestones = soroban_sdk::vec![
+        &env,
+        MilestoneInput {
+            target_amount: 10_000,
+            description_hash: desc_hash(&env, [0; 32]),
+        },
+    ];
+    let min_donation = 100;
+
+    client.initialize(
+        &creator,
+        &goal_amount,
+        &original_end_time,
+        &accepted_assets,
+        &milestones,
+        &min_donation,
+    );
+
+    // Extension exactly to the cap (original + 90 days) is allowed
+    let capped_end_time = original_end_time + 90 * day;
+    let result = client.try_extend_deadline(&capped_end_time);
+    assert!(result.is_ok(), "extension to the 90-day cap failed");
+    assert_eq!(client.get_campaign_info().end_time, capped_end_time);
+
+    // Extension one second past the cap (original + 90 days) must fail
+    let result = client.try_extend_deadline(&(capped_end_time + 1));
+    assert_eq!(result, Err(Ok(Error::DeadlineExceedsLimit)));
+
+    // End time is unchanged after the rejected extension
+    assert_eq!(client.get_campaign_info().end_time, capped_end_time);
+}
+
+#[test]
+fn test_extend_deadline_chained_twice() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
+
+    let creator = Address::generate(&env);
+    let goal_amount = 10_000;
+    let day: u64 = 24 * 60 * 60;
+    let original_end_time = env.ledger().timestamp() + 1000;
+    let accepted_assets = soroban_sdk::vec![&env, AssetInfo::Native];
+    let milestones = soroban_sdk::vec![
+        &env,
+        MilestoneInput {
+            target_amount: 10_000,
+            description_hash: desc_hash(&env, [0; 32]),
+        },
+    ];
+    let min_donation = 100;
+
+    client.initialize(
+        &creator,
+        &goal_amount,
+        &original_end_time,
+        &accepted_assets,
+        &milestones,
+        &min_donation,
+    );
+
+    // First extension: original + 30 days
+    let first_extension = original_end_time + 30 * day;
+    client.extend_deadline(&first_extension);
+    assert_eq!(client.get_campaign_info().end_time, first_extension);
+
+    // Second chained extension: still measured against the ORIGINAL deadline.
+    // original + 90 days is allowed; anything past it is rejected even though
+    // it is later than the current end time.
+    let second_extension = original_end_time + 89 * day;
+    client.extend_deadline(&second_extension);
+    assert_eq!(client.get_campaign_info().end_time, second_extension);
+
+    // The cap applies relative to the original end time, not the latest one
+    let result = client.try_extend_deadline(&(original_end_time + 91 * day));
+    assert_eq!(result, Err(Ok(Error::DeadlineExceedsLimit)));
+}
+
+#[test]
+fn test_get_campaign_status_days_remaining() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
+
+    let creator = Address::generate(&env);
+    let goal_amount = 10_000;
+    let day: u64 = 24 * 60 * 60;
+    let start = env.ledger().timestamp();
+    let end_time = start + 5 * day;
+    let accepted_assets = soroban_sdk::vec![&env, AssetInfo::Native];
+    let milestones = soroban_sdk::vec![
+        &env,
+        MilestoneInput {
+            target_amount: 10_000,
+            description_hash: desc_hash(&env, [0; 32]),
+        },
+    ];
+    let min_donation = 100;
+
+    client.initialize(
+        &creator,
+        &goal_amount,
+        &end_time,
+        &accepted_assets,
+        &milestones,
+        &min_donation,
+    );
+
+    // 5 full days remain
+    let (status, days_remaining) = client.get_campaign_status();
+    assert_eq!(status, CampaignStatus::Active);
+    assert_eq!(days_remaining, 5);
+
+    // Advance to 12 hours before the deadline: partial day rounds up to 1
+    env.ledger().with_mut(|l| l.timestamp = end_time - day / 2);
+    let (_, days_remaining) = client.get_campaign_status();
+    assert_eq!(days_remaining, 1);
+
+    // After the deadline days_remaining becomes negative
+    env.ledger().with_mut(|l| l.timestamp = end_time + 3 * day);
+    let (_, days_remaining) = client.get_campaign_status();
+    assert_eq!(days_remaining, -3);
 }
