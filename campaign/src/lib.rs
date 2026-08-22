@@ -1,18 +1,20 @@
 #![no_std]
 
 use common::{
-    check_contract_not_frozen, check_contract_not_locked, check_creator_auth,
     check_not_already_initialized, is_asset_accepted, validate_add, validate_div, validate_mul,
-    validate_sub, AssetInfo, CampaignStatus, ErrorCode, MilestoneStatus,
+    validate_sub, AssetInfo, CampaignStatus, MilestoneStatus,
 };
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, Address, BytesN, Env, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
+    Symbol, Vec,
 };
 
 pub mod storage;
 
 const MAX_MILESTONES: u32 = 5;
 const REFUND_WINDOW: u64 = 30 * 24 * 60 * 60; // 30 days in seconds
+const MAX_DEADLINE_EXTENSION: u64 = 90 * 24 * 60 * 60; // 90 days in seconds
+const SECONDS_PER_DAY: i64 = 24 * 60 * 60;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -21,94 +23,97 @@ pub enum Error {
     /// elevated permissions (e.g., admin-only actions, creator-only actions).
     /// Recoverable: This is a bad input issue - only the authorized caller can retry.
     Unauthorized = 1,
-    
+
     /// Thrown when initialize() is called more than once on a contract.
     /// Terminal: This indicates a re-initialization attack or incorrect usage.
     AlreadyInitialized = 2,
-    
+
     /// Thrown when a campaign is interacted with before it has been initialized.
     /// Recoverable: The caller must initialize the contract first before performing other operations.
     NotInitialized = 21,
-    
+
     /// Thrown when the goal amount provided during initialization is <= 0.
     /// Recoverable: Fix the goal amount to a positive value and retry initialization.
     InvalidGoalAmount = 3,
-    
+
     /// Thrown when the end time provided during initialization is in the past.
     /// Recoverable: Fix the end time to a future timestamp and retry initialization.
     InvalidEndTime = 4,
-    
+
     /// Thrown when no accepted assets are provided during initialization.
     /// Recoverable: Provide at least one accepted asset and retry initialization.
     NoAcceptedAssets = 5,
-    
+
     /// Thrown when milestones provided during initialization are invalid (wrong count, non-increasing amounts, last milestone != goal).
     /// Recoverable: Fix the milestones to meet the validation criteria and retry initialization.
     InvalidMilestones = 6,
-    
+
     /// Thrown when an invalid amount (<=0) is provided for an operation.
     /// Recoverable: Provide a valid positive amount and retry.
     InvalidAmount = 7,
-    
+
     /// Thrown when an asset that is not in the campaign's accepted assets list is used in a donation.
     /// Recoverable: Use an accepted asset or add the asset to the campaign's accepted assets list.
     AssetNotAccepted = 8,
-    
+
     /// Thrown when an operation is attempted on a campaign that is not in an active state.
     /// Recoverable: Verify the campaign's current status before attempting the operation.
     CampaignNotActive = 9,
-    
+
     /// Thrown when an operation is attempted on a campaign that has passed its end time.
     /// Recoverable: Cannot be retried - campaign has concluded.
     CampaignEnded = 10,
-    
+
     /// Thrown when attempting to cancel a campaign that has remaining funds in the contract.
     /// Recoverable: Withdraw or distribute all funds before attempting to cancel.
     CannotCancelWithFunds = 22,
-    
+
     /// Thrown when a refund is attempted after the refund window (30 days after campaign end) has closed.
     /// Recoverable: Cannot be retried - refund window has expired.
     RefundWindowClosed = 19,
-    
+
     /// Thrown when a milestone with the specified index does not exist on the campaign.
     /// Recoverable: Verify the milestone index exists before attempting the operation.
     MilestoneNotFound = 13,
-    
+
     /// Thrown when attempting to release a milestone that is still in Locked status.
     /// Recoverable: Wait for the milestone to be unlocked (when enough funds are raised) before attempting to release.
     MilestoneNotUnlocked = 17,
-    
+
     /// Thrown when attempting to release a milestone out of order - a previous milestone has not been released.
     /// Recoverable: Release milestones in sequential order.
     PreviousMilestoneNotReleased = 15,
-    
+
     /// Thrown when a donation is less than the campaign's minimum donation amount.
     /// Recoverable: Increase the donation amount to meet the minimum and retry.
     DonationTooSmall = 14,
-    
+
     /// Thrown when an arithmetic operation would cause an overflow or underflow.
     /// Terminal: This indicates a critical bug in the contract's accounting logic.
     Overflow = 18,
-    
+
     /// Thrown when a reentrant call is detected on the contract.
     /// Terminal: This indicates a reentrancy attack or incorrect usage of reentrant calls.
     Reentrant = 23,
-    
+
     /// Thrown when an operation is attempted on a frozen contract.
     /// Recoverable: Cannot be retried - contract is frozen and cannot accept modifications.
     ContractFrozen = 24,
-    
-    /// Thrown when there is insufficient balance in the contract to perform an operation (e.g., withdrawal, transfer).
+
+    /// Thrown when insufficient balance in the contract to perform an operation (e.g., withdrawal, transfer).
     /// Recoverable: Ensure the contract has enough funds before attempting the operation.
     InsufficientContractBalance = 25,
-    
+
+    /// Thrown when a requested deadline extension would push the campaign end time
+    /// more than 90 days past the original end time.
+    /// Recoverable: Provide a new_end_time within the 90-day extension limit.
+    DeadlineExceedsLimit = 26,
+
     // Legacy errors maintained for backward compatibility
     CampaignCancelled = 11,
     DonationFailed = 12,
     MilestoneAlreadyReleased = 16,
     NoRefundAvailable = 20,
-    ArithmeticOverflow = 18,
-    NotAcceptedAsset = 8,
 }
 
 #[contracttype]
@@ -126,6 +131,7 @@ pub enum DataKey {
     XlmTokenAddress,
     MinDonationAmount,
     CampaignEndTime,
+    OriginalEndTime,
 }
 
 #[contracttype]
@@ -259,6 +265,10 @@ impl CampaignContract {
         // Store min donation amount
         storage::set_min_donation_amount(&env, &min_donation_amount);
 
+        // Record the original end time so deadline extensions are always capped
+        // relative to the initial deadline, even across repeated extensions.
+        storage::set_original_end_time(&env, &end_time);
+
         let campaign_data = CampaignData {
             creator: creator.clone(),
             goal_amount,
@@ -368,7 +378,7 @@ impl CampaignContract {
         for (i, asset_info) in campaign_data.accepted_assets.iter().enumerate() {
             let asset_raised = storage::get_raised_per_asset(&env, asset_info.clone()).unwrap_or(0);
             if asset_raised > 0 {
-                let per_asset_release = if i == campaign_data.accepted_assets.len() - 1 {
+                let per_asset_release = if i == (campaign_data.accepted_assets.len() - 1) as usize {
                     // Last asset, release the remainder
                     match validate_sub(release_amount, total_released_this_milestone) {
                         Ok(amt) => amt,
@@ -403,7 +413,7 @@ impl CampaignContract {
                             }
                         };
 
-                    let token_address = get_token_address(&env, &asset_info);
+                    let token_address = get_token_address(&env, &asset_info)?;
                     let token_client = soroban_sdk::token::TokenClient::new(&env, &token_address);
                     token_client.transfer(
                         &env.current_contract_address(),
@@ -422,6 +432,7 @@ impl CampaignContract {
                             recipient.clone(),
                             env.ledger().timestamp(),
                         ),
+                        (per_asset_release, env.ledger().timestamp()),
                     );
                 }
             }
@@ -642,6 +653,8 @@ impl CampaignContract {
 
     /// Cancels the campaign and starts the refund window.
     /// Only callable by the campaign creator.
+    /// Only permitted while no funds have been raised (`raised_amount == 0`);
+    /// otherwise fails with `CannotCancelWithFunds`.
     /// Sets the campaign status to Cancelled and records the end time for refund window calculation.
     pub fn cancel_campaign(env: Env) -> Result<(), Error> {
         let mut campaign_data = get_campaign_data(&env)?;
@@ -660,9 +673,8 @@ impl CampaignContract {
             return Err(Error::CampaignNotActive);
         }
 
-        // Prevent cancellation if there are still unreleased funds in the contract
-        let remaining_funds = validate_sub(campaign_data.raised_amount, campaign_data.released_amount)?;
-        if remaining_funds > 0 {
+        // Cancellation is only permitted while nothing has been raised
+        if campaign_data.raised_amount != 0 {
             return Err(Error::CannotCancelWithFunds);
         }
 
@@ -675,11 +687,80 @@ impl CampaignContract {
         storage::set_campaign_end_time(&env, current_time);
 
         env.events().publish(
-            (symbol_short!("cancelled"),),
+            (Symbol::new(&env, "campaign_cancelled"),),
             (campaign_data.creator.clone(), current_time),
         );
 
         Ok(())
+    }
+
+    /// Extends the campaign deadline to `new_end_time`.
+    /// Only callable by the campaign creator while the campaign is Active or GoalReached.
+    /// The new end time must be strictly later than the current end time and may
+    /// not push the deadline more than 90 days past the ORIGINAL end time,
+    /// even across repeated extensions.
+    pub fn extend_deadline(env: Env, new_end_time: u64) -> Result<(), Error> {
+        let mut campaign_data = get_campaign_data(&env)?;
+        campaign_data.creator.require_auth();
+
+        // Check that contract is not frozen
+        if storage::is_frozen(&env) {
+            return Err(Error::ContractFrozen);
+        }
+
+        // Only allow extensions while the campaign is Active or GoalReached
+        if !matches!(
+            campaign_data.status,
+            CampaignStatus::Active | CampaignStatus::GoalReached
+        ) {
+            return Err(Error::CampaignNotActive);
+        }
+
+        // The new deadline must be later than the current one
+        if new_end_time <= campaign_data.end_time {
+            return Err(Error::InvalidEndTime);
+        }
+
+        // Cap at 90 days past the original end time, even across repeated extensions
+        let original_end_time =
+            storage::get_original_end_time(&env).unwrap_or(campaign_data.end_time);
+        let max_allowed = match original_end_time.checked_add(MAX_DEADLINE_EXTENSION) {
+            Some(time) => time,
+            None => return Err(Error::Overflow),
+        };
+        if new_end_time > max_allowed {
+            return Err(Error::DeadlineExceedsLimit);
+        }
+
+        campaign_data.end_time = new_end_time;
+        storage::set_campaign_data(&env, &campaign_data);
+
+        env.events().publish(
+            (Symbol::new(&env, "deadline_extended"),),
+            (campaign_data.creator.clone(), new_end_time),
+        );
+
+        Ok(())
+    }
+
+    /// Returns the current campaign status together with the number of days
+    /// remaining until the campaign's end time.
+    /// `days_remaining` is computed from the current ledger timestamp and is
+    /// negative once the deadline has passed.
+    pub fn get_campaign_status(env: Env) -> Result<(CampaignStatus, i64), Error> {
+        let campaign_data = get_campaign_data(&env)?;
+        let seconds_remaining = campaign_data.end_time as i64 - env.ledger().timestamp() as i64;
+        let mut days_remaining = seconds_remaining / SECONDS_PER_DAY;
+        if seconds_remaining % SECONDS_PER_DAY != 0 {
+            // Round away from zero so any time left counts as a full day and
+            // any time past the deadline reports as negative.
+            if seconds_remaining > 0 {
+                days_remaining += 1;
+            } else {
+                days_remaining -= 1;
+            }
+        }
+        Ok((campaign_data.status, days_remaining))
     }
 
     /// Returns the total refundable amount for a donor.
@@ -770,7 +851,8 @@ impl CampaignContract {
         let token_client = soroban_sdk::token::TokenClient::new(&env, &token_address);
         token_client.transfer(&donor, &env.current_contract_address(), &amount);
 
-        data.raised_amount = validate_add(data.raised_amount, amount)?;
+        data.raised_amount =
+            validate_add(data.raised_amount, amount).map_err(|_| Error::Overflow)?;
 
         let mut goal_just_reached = false;
         if data.raised_amount >= data.goal_amount && data.status != CampaignStatus::GoalReached {
@@ -812,17 +894,26 @@ impl CampaignContract {
             last_donation_time: 0,
         });
 
-        donor_record.total_donated = validate_add(donor_record.total_donated, amount)?;
+        donor_record.total_donated =
+            validate_add(donor_record.total_donated, amount).map_err(|_| Error::Overflow)?;
         donor_record.last_donation_time = env.ledger().timestamp();
 
+        // soroban_sdk::Vec has no in-place mutation, so rebuild the per-asset
+        // breakdown, accumulating into the matching entry when it exists.
         let mut found = false;
-        for item in donor_record.per_asset.iter_mut() {
+        let mut updated_per_asset: Vec<PerAssetBreakdown> = Vec::new(&env);
+        for item in donor_record.per_asset.iter() {
             if item.asset == asset {
-                item.amount = validate_add(item.amount, amount)?;
+                updated_per_asset.push_back(PerAssetBreakdown {
+                    asset: item.asset.clone(),
+                    amount: validate_add(item.amount, amount).map_err(|_| Error::Overflow)?,
+                });
                 found = true;
-                break;
+            } else {
+                updated_per_asset.push_back(item.clone());
             }
         }
+        donor_record.per_asset = updated_per_asset;
 
         if !found {
             donor_record.per_asset.push_back(PerAssetBreakdown {
@@ -837,7 +928,7 @@ impl CampaignContract {
         storage::set_raised_per_asset(
             &env,
             asset.clone(),
-            validate_add(total_asset_raised, amount)?,
+            validate_add(total_asset_raised, amount).map_err(|_| Error::Overflow)?,
         );
 
         env.events().publish(

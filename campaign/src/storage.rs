@@ -12,8 +12,8 @@
 
 use soroban_sdk::{Address, Env};
 
-use crate::{CampaignData, ContractStatus, DataKey, DonorRecord, MilestoneData};
-use common::AssetInfo;
+use crate::{CampaignData, DataKey, DonorRecord, MilestoneData};
+use common::{AssetInfo, CampaignStatus};
 
 pub fn has_campaign_data(env: &Env) -> bool {
     env.storage().persistent().has(&DataKey::CampaignData)
@@ -59,13 +59,13 @@ pub fn get_admin(env: &Env) -> Option<Address> {
     env.storage().persistent().get(&DataKey::Admin)
 }
 
-pub fn set_contract_status(env: &Env, status: ContractStatus) {
+pub fn set_contract_status(env: &Env, status: CampaignStatus) {
     env.storage()
         .persistent()
         .set(&DataKey::ContractStatus, &status);
 }
 
-pub fn get_contract_status(env: &Env) -> Option<ContractStatus> {
+pub fn get_contract_status(env: &Env) -> Option<CampaignStatus> {
     env.storage().persistent().get(&DataKey::ContractStatus)
 }
 
@@ -171,4 +171,14 @@ pub fn set_campaign_end_time(env: &Env, timestamp: u64) {
 
 pub fn get_campaign_end_time(env: &Env) -> Option<u64> {
     env.storage().persistent().get(&DataKey::CampaignEndTime)
+}
+
+pub fn set_original_end_time(env: &Env, timestamp: &u64) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::OriginalEndTime, timestamp);
+}
+
+pub fn get_original_end_time(env: &Env) -> Option<u64> {
+    env.storage().persistent().get(&DataKey::OriginalEndTime)
 }
