@@ -284,4 +284,171 @@ mod tests {
             Err(ErrorCode::AlreadyInitialized)
         );
     }
+
+    // ─── Arithmetic Validation Tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_validate_add_success() {
+        assert_eq!(validate_add(100, 200), Ok(300));
+        assert_eq!(validate_add(0, 0), Ok(0));
+        assert_eq!(validate_add(-10, 5), Ok(-5));
+        assert_eq!(validate_add(i128::MAX, 0), Ok(i128::MAX));
+    }
+
+    #[test]
+    fn test_validate_add_overflow() {
+        assert_eq!(validate_add(i128::MAX, 1), Err(ErrorCode::ArithmeticOverflow));
+        assert_eq!(validate_add(i128::MAX, i128::MAX), Err(ErrorCode::ArithmeticOverflow));
+    }
+
+    #[test]
+    fn test_validate_sub_success() {
+        assert_eq!(validate_sub(300, 100), Ok(200));
+        assert_eq!(validate_sub(0, 0), Ok(0));
+        assert_eq!(validate_sub(5, 10), Ok(-5));
+        assert_eq!(validate_sub(i128::MIN, 0), Ok(i128::MIN));
+    }
+
+    #[test]
+    fn test_validate_sub_overflow() {
+        assert_eq!(validate_sub(i128::MIN, 1), Err(ErrorCode::ArithmeticOverflow));
+        assert_eq!(validate_sub(0, i128::MIN), Err(ErrorCode::ArithmeticOverflow));
+    }
+
+    #[test]
+    fn test_validate_mul_success() {
+        assert_eq!(validate_mul(100, 200), Ok(20_000));
+        assert_eq!(validate_mul(0, i128::MAX), Ok(0));
+        assert_eq!(validate_mul(-5, 10), Ok(-50));
+    }
+
+    #[test]
+    fn test_validate_mul_overflow() {
+        assert_eq!(validate_mul(i128::MAX, 2), Err(ErrorCode::ArithmeticOverflow));
+        assert_eq!(validate_mul(i128::MAX, i128::MAX), Err(ErrorCode::ArithmeticOverflow));
+        assert_eq!(validate_mul(i128::MIN, 2), Err(ErrorCode::ArithmeticOverflow));
+    }
+
+    #[test]
+    fn test_validate_div_success() {
+        assert_eq!(validate_div(200, 100), Ok(2));
+        assert_eq!(validate_div(0, 1), Ok(0));
+        assert_eq!(validate_div(-50, 10), Ok(-5));
+        assert_eq!(validate_div(7, 2), Ok(3)); // integer truncation
+    }
+
+    #[test]
+    fn test_validate_div_by_zero() {
+        assert_eq!(validate_div(100, 0), Err(ErrorCode::ArithmeticOverflow));
+        assert_eq!(validate_div(0, 0), Err(ErrorCode::ArithmeticOverflow));
+    }
+
+    // ─── Address Validation Tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_validate_address_valid() {
+        let env = Env::default();
+        let address = Address::generate(&env);
+        assert!(validate_address(&env, &address).is_ok());
+    }
+
+    #[test]
+    fn test_validate_address_zero_address() {
+        let env = Env::default();
+        let zero_address = Address::from_string(&soroban_sdk::String::from_str(
+            &env,
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWhf",
+        ));
+        assert_eq!(
+            validate_address(&env, &zero_address),
+            Err(ErrorCode::InvalidAddress)
+        );
+    }
+
+    // ─── Timestamp Validation Tests ───────────────────────────────────────────
+
+    #[test]
+    fn test_validate_future_timestamp() {
+        let env = Env::default();
+        env.ledger().with_mut(|l| l.timestamp = 1000);
+
+        assert!(validate_future_timestamp(&env, 1001).is_ok());
+        assert!(validate_future_timestamp(&env, 2000).is_ok());
+        // Same as current timestamp should fail (must be strictly future)
+        assert_eq!(
+            validate_future_timestamp(&env, 1000),
+            Err(ErrorCode::InvalidTimestamp)
+        );
+        assert_eq!(
+            validate_future_timestamp(&env, 999),
+            Err(ErrorCode::InvalidTimestamp)
+        );
+    }
+
+    // ─── Description Hash Tests ───────────────────────────────────────────────
+
+    #[test]
+    fn test_description_hash_bytes() {
+        let env = Env::default();
+        let hash = BytesN::from_array(&env, &[42u8; 32]);
+        let arr = description_hash_bytes(&hash);
+        assert_eq!(arr, [42u8; 32]);
+    }
+
+    #[test]
+    fn test_description_hash_bytes_zero() {
+        let env = Env::default();
+        let hash = BytesN::from_array(&env, &[0u8; 32]);
+        let arr = description_hash_bytes(&hash);
+        assert_eq!(arr, [0u8; 32]);
+    }
+
+    // ─── Current Timestamp Test ───────────────────────────────────────────────
+
+    #[test]
+    fn test_current_timestamp() {
+        let env = Env::default();
+        env.ledger().with_mut(|l| l.timestamp = 42_000);
+        assert_eq!(current_timestamp(&env), 42_000);
+    }
+
+    // ─── Asset Equality Edge Cases ────────────────────────────────────────────
+
+    #[test]
+    fn test_assets_equal_different_tokens() {
+        let env = Env::default();
+        let addr_a = Address::generate(&env);
+        let addr_b = Address::generate(&env);
+        assert!(!assets_equal(
+            &AssetInfo::Token(addr_a),
+            &AssetInfo::Token(addr_b)
+        ));
+    }
+
+    #[test]
+    fn test_is_asset_accepted_empty_list() {
+        let env = Env::default();
+        let accepted = soroban_sdk::Vec::<AssetInfo>::new(&env);
+        assert!(!is_asset_accepted(&accepted, &AssetInfo::Native));
+    }
+
+    // ─── i128 Boundary Tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_validate_add_i128_min() {
+        assert_eq!(validate_add(i128::MIN, 0), Ok(i128::MIN));
+        assert_eq!(validate_add(i128::MIN, -1), Err(ErrorCode::ArithmeticOverflow));
+    }
+
+    #[test]
+    fn test_validate_mul_by_zero() {
+        assert_eq!(validate_mul(i128::MAX, 0), Ok(0));
+        assert_eq!(validate_mul(0, i128::MAX), Ok(0));
+    }
+
+    #[test]
+    fn test_validate_div_i128_min_by_neg1() {
+        // i128::MIN / -1 would overflow in two's complement
+        assert_eq!(validate_div(i128::MIN, -1), Err(ErrorCode::ArithmeticOverflow));
+    }
 }
