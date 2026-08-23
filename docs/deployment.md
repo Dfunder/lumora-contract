@@ -128,6 +128,100 @@ The following invariants must always hold true:
 - `raised_amount` = sum of all `raised_per_asset`
 - `total_donated` for a donor = sum of all `per_asset` donations for that donor
 
+## Testing Strategy
+
+The campaign contract has a comprehensive test suite covering edge cases, boundary conditions, state machine transitions, and property-based invariants.
+
+### Test Categories
+
+#### 1. Initialization Edge Cases
+- Zero and negative goal amounts
+- Past end times
+- Empty accepted assets list
+- Empty milestone list and exceeding MAX_MILESTONES (5)
+- Last milestone not equal to goal amount
+- Negative minimum donation amount
+- Zero minimum donation (accepts any positive amount)
+- Duplicate milestone amounts (non-strictly increasing)
+
+#### 2. Donation Edge Cases
+- Zero and negative donation amounts
+- Donations below the minimum threshold
+- Donations with unaccepted assets
+- Large i128 amounts (1 trillion stroops)
+- Donations after campaign end time (triggers state transition)
+- Donations in non-Active states (Ended, Cancelled, Failed)
+- Multiple donations from the same donor
+- Multiple donors with different assets
+
+#### 3. State Machine Transitions
+- **Frozen state**: Blocks `donate()`, `release_milestone()`, `cancel_campaign()`, `extend_deadline()`, `end_campaign()`, `fail_campaign()`
+- **Active → GoalReached**: Donation reaches or exceeds goal
+- **Active → Ended**: Creator ends early, deadline expires, or `update_status()` called
+- **Active → Cancelled**: Creator cancels (only with zero funds raised)
+- **Active → Failed**: Creator marks as failed
+- **GoalReached → Ended/Failed**: Creator can end or fail from GoalReached
+- **Ended → milestone release still works**: Ending doesn't block milestone releases
+
+#### 4. Milestone Ordering Violations
+- Skipping milestone indices (must release sequentially)
+- Releasing already-released milestones
+- Releasing locked (not-yet-unlocked) milestones
+- All 5 milestones released in sequence with correct release amounts
+- Unequal milestone spreads verify correct incremental amounts
+
+#### 5. Multi-Asset Per-Asset Breakdown
+- Single asset: accumulated donations tracked correctly
+- Two assets: interleaved donations maintain correct per-asset sums
+- Multiple donors: independent per-donor records
+- Property: `sum(per_asset.amounts) == total_donated` for every donor
+
+#### 6. Refund Window Tests
+- Refund window boundary: exactly 30 days succeeds
+- Past 30 days: `RefundWindowClosed` error
+- Refund only in Cancelled/Failed status
+- Double-refund prevention
+- Multi-asset refund exact calculation
+
+#### 7. Property-Based / Invariant Tests
+- **`released_amount ≤ raised_amount`** after any operation sequence
+- **Milestone monotonicity**: once Unlocked, never returns to Locked
+- **Per-asset sum invariant**: `sum(per_asset) == total_donated`
+- **Proptest fuzzing**: random valid amounts for `donate()`, random milestone configurations
+
+#### 8. Storage Unit Tests
+- All storage roundtrips: campaign data, milestones, donor records, totals, per-asset amounts
+- Lock acquire/release cycle and reentrancy prevention
+- Frozen state independence from lock state
+- XLM token, min donation, and end time storage
+
+### Running Tests
+
+```bash
+# Run all tests
+make test
+
+# Run with verbose output
+cargo test -- --nocapture
+
+# Run specific test by name
+cargo test test_frozen_blocks_donate
+
+# Run property-based (proptest) tests
+cargo test fuzz_
+```
+
+### Test Coverage Targets
+
+| Path | Target | Description |
+|------|--------|-------------|
+| `initialize()` | 90%+ | All validation branches, edge cases |
+| `donate()` | 90%+ | State checks, asset validation, milestone unlocking |
+| `release_milestone()` | 90%+ | Ordering, amount calculation, multi-asset splits |
+| `refund()` | 85%+ | Window checks, per-asset refund, double-refund |
+| Storage layer | 90%+ | All getters/setters, lock/frozen state |
+| Common utilities | 95%+ | Arithmetic validation, address checks |
+
 ## Rounding Strategy
 
 The campaign contract uses integer arithmetic for all financial calculations. This means that there is no floating-point arithmetic and therefore no rounding errors. When calculating the amount to release for each asset in a milestone, the contract uses a simple division and multiplication strategy. The last asset in the list of accepted assets will receive the remainder of the release amount, ensuring that the full amount is released.
