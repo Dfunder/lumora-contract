@@ -137,3 +137,76 @@ fn milestone_released_event_has_required_payload_for_each_asset() {
 
     assert_eq!((asset_a_events, asset_b_events), (1, 1));
 }
+
+#[test]
+fn donation_received_event_has_required_payload_with_timestamp() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let donor = Address::generate(&env);
+    let token = register_funded_token(&env, &donor, 1_000);
+    let asset = AssetInfo::Token(token.clone());
+
+    client.initialize(
+        &creator,
+        &1_000,
+        &(env.ledger().timestamp() + 1_000),
+        &soroban_sdk::vec![&env, asset.clone()],
+        &soroban_sdk::vec![&env, milestone(1_000, &env)],
+        &1,
+    );
+
+    env.ledger().with_mut(|ledger| ledger.timestamp = 12345);
+    client.donate(&donor, &500, &asset);
+
+    let event_topics: Vec<Val> =
+        (Symbol::new(&env, "donation_received"), contract_id.clone()).into_val(&env);
+    let expected_data = (donor.clone(), 500_i128, token.to_string(), 500_i128, 12345_u64);
+
+    let mut donation_events = 0;
+    for event in env.events().all().iter() {
+        if event.1 == event_topics {
+            donation_events += 1;
+            assert_eq!(event.0, contract_id);
+            let data: (Address, i128, soroban_sdk::String, i128, u64) = event.2.into_val(&env);
+            assert_eq!(data, expected_data);
+        }
+    }
+    assert_eq!(donation_events, 1);
+}
+
+#[test]
+fn campaign_initialized_event_includes_contract_address() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let token = register_funded_token(&env, &creator, 1_000);
+    let asset = AssetInfo::Token(token);
+
+    client.initialize(
+        &creator,
+        &1_000,
+        &(env.ledger().timestamp() + 1_000),
+        &soroban_sdk::vec![&env, asset.clone()],
+        &soroban_sdk::vec![&env, milestone(1_000, &env)],
+        &1,
+    );
+
+    let event_topics: Vec<Val> =
+        (Symbol::new(&env, "campaign_initialized"), contract_id.clone(), creator.clone()).into_val(&env);
+
+    let mut init_events = 0;
+    for event in env.events().all().iter() {
+        if event.1 == event_topics {
+            init_events += 1;
+            assert_eq!(event.0, contract_id);
+        }
+    }
+    assert_eq!(init_events, 1);
+}
