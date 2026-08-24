@@ -296,7 +296,7 @@ impl CampaignContract {
         }
 
         env.events().publish(
-            (Symbol::new(&env, "campaign_initialized"), creator),
+            (Symbol::new(&env, "campaign_initialized"), env.current_contract_address(), creator),
             (goal_amount, end_time, accepted_assets, milestones),
         );
 
@@ -1005,9 +1005,15 @@ impl CampaignContract {
             validate_add(total_asset_raised, amount).map_err(|_| Error::Overflow)?,
         );
 
+        // Convert AssetInfo to asset_code string for event data
+        let asset_code = match &asset {
+            AssetInfo::Native => soroban_sdk::String::from_str(&env, "XLM"),
+            AssetInfo::Token(addr) => addr.to_string(),
+        };
+
         env.events().publish(
-            (symbol_short!("donation"),),
-            (donor, amount, asset, data.raised_amount),
+            (Symbol::new(&env, "donation_received"), env.current_contract_address()),
+            (donor, amount, asset_code, data.raised_amount, env.ledger().timestamp()),
         );
 
         Ok(())
