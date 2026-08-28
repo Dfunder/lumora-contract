@@ -10,6 +10,20 @@ fn desc_hash(env: &Env, bytes: [u8; 32]) -> BytesN<32> {
     BytesN::from_array(env, &bytes)
 }
 
+/// Registers a real Stellar Asset Contract and mints `amount` to `owner`.
+/// Tests that need `donate`/`request_refund` to actually move tokens (as
+/// opposed to merely checking storage state) must use a real registered
+/// token address here rather than `AssetInfo::Native` backed by a fake
+/// `Address::generate(&env)` "XLM token" - the latter has no deployed
+/// contract behind it, so `token_client.transfer(...)` inside `donate`/
+/// `request_refund` has nothing to actually invoke.
+fn register_funded_token(env: &Env, owner: &Address, amount: i128) -> Address {
+    let admin = Address::generate(env);
+    let token = env.register_stellar_asset_contract(admin);
+    soroban_sdk::token::StellarAssetClient::new(env, &token).mint(owner, &amount);
+    token
+}
+
 fn assert_campaign_data_equal(a: &CampaignData, b: &CampaignData) {
     assert_eq!(a.creator, b.creator, "creator mismatch");
     assert_eq!(a.goal_amount, b.goal_amount, "goal_amount mismatch");
@@ -651,6 +665,7 @@ fn test_release_amount_single_milestone() {
 #[test]
 fn test_multi_asset_refund_exact_calculation() {
     let env = Env::default();
+    env.mock_all_auths();
     let contract_id = env.register_contract(None, CampaignContract);
     let client = CampaignContractClient::new(&env, &contract_id);
 
@@ -704,16 +719,245 @@ fn test_multi_asset_refund_exact_calculation() {
     assert!(client.is_refund_eligible(&donor));
 
     // Process refund
-    let result = client.try_refund(&donor);
+    let result = client.try_request_refund(&donor);
     assert!(result.is_ok(), "refund failed: {:?}", result);
 
     // Verify donor record was cleared
     let donor_record_after = client.get_donor_record(&donor);
     assert!(donor_record_after.is_none() || donor_record_after.unwrap().total_donated == 0);
 
-    // Verify cannot refund twice
-    let result = client.try_refund(&donor);
+    // Verify cannot refund twice (double-refund attempt)
+    let result = client.try_request_refund(&donor);
     assert_eq!(result, Err(Ok(Error::NoRefundAvailable)));
+}
+
+/// AC: refund attempt on an active campaign panics.
+#[test]
+#[should_panic]
+fn test_request_refund_active_campaign_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
+
+    let creator = Address::generate(&env);
+    let goal_amount = 10_000;
+    let end_time = env.ledger().timestamp() + 1_000;
+    let donor = Address::generate(&env);
+    let asset = AssetInfo::Token(register_funded_token(&env, &donor, 5_000));
+    let accepted_assets = soroban_sdk::vec![&env, asset.clone()];
+    let milestones = soroban_sdk::vec![
+        &env,
+        MilestoneInput {
+            target_amount: 10_000,
+            description_hash: desc_hash(&env, [0; 32]),
+        },
+    ];
+    let min_donation = 100;
+
+    client.initialize(
+        &creator,
+        &goal_amount,
+        &end_time,
+        &accepted_assets,
+        &milestones,
+        &min_donation,
+    );
+
+    client.donate(&donor, &5_000, &asset);
+
+    // Campaign is still Active - request_refund must panic.
+    client.request_refund(&donor);
+}
+
+/// AC: double-refund attempt (second call, after a successful refund, panics).
+#[test]
+#[should_panic]
+fn test_request_refund_double_refund_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
+
+    let creator = Address::generate(&env);
+    let goal_amount = 10_000;
+    let end_time = env.ledger().timestamp() + 1_000;
+    let donor = Address::generate(&env);
+    let asset = AssetInfo::Token(register_funded_token(&env, &donor, 5_000));
+    let accepted_assets = soroban_sdk::vec![&env, asset.clone()];
+    let milestones = soroban_sdk::vec![
+        &env,
+        MilestoneInput {
+            target_amount: 10_000,
+            description_hash: desc_hash(&env, [0; 32]),
+        },
+    ];
+    let min_donation = 100;
+
+    client.initialize(
+        &creator,
+        &goal_amount,
+        &end_time,
+        &accepted_assets,
+        &milestones,
+        &min_donation,
+    );
+
+    client.donate(&donor, &5_000, &asset);
+
+    client.cancel_campaign();
+    client.request_refund(&donor);
+    // Second call must panic - donor record was cleared by the first refund.
+    client.request_refund(&donor);
+}
+
+/// AC: eligibility view + request_refund also cover an `Ended` campaign that
+/// released zero milestones, within the refund window (anchored at the
+/// campaign's scheduled end_time since ending never sets CampaignEndTime).
+#[test]
+fn test_request_refund_ended_campaign_zero_milestones_released() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
+
+    let creator = Address::generate(&env);
+    let goal_amount = 10_000;
+    let end_time = env.ledger().timestamp() + 1_000;
+    let donor = Address::generate(&env);
+    let asset = AssetInfo::Token(register_funded_token(&env, &donor, 4_000));
+    let accepted_assets = soroban_sdk::vec![&env, asset.clone()];
+    let milestones = soroban_sdk::vec![
+        &env,
+        MilestoneInput {
+            target_amount: 10_000,
+            description_hash: desc_hash(&env, [0; 32]),
+        },
+    ];
+    let min_donation = 100;
+
+    client.initialize(
+        &creator,
+        &goal_amount,
+        &end_time,
+        &accepted_assets,
+        &milestones,
+        &min_donation,
+    );
+
+    // Raise less than the goal so the single milestone never unlocks/releases.
+    client.donate(&donor, &4_000, &asset);
+
+    // Let the campaign expire without reaching the goal, then end it.
+    env.ledger().with_mut(|l| l.timestamp = end_time + 1);
+    client.end_campaign();
+
+    let campaign_data = client.get_campaign_info();
+    assert_eq!(campaign_data.status, CampaignStatus::Ended);
+    assert_eq!(campaign_data.released_amount, 0);
+
+    assert!(client.is_refund_eligible(&donor));
+    let result = client.try_request_refund(&donor);
+    assert!(
+        result.is_ok(),
+        "refund from ended campaign failed: {:?}",
+        result
+    );
+    assert_eq!(client.get_refundable_amount(&donor), 0);
+}
+
+/// The refund window for an `Ended` campaign is anchored at the scheduled
+/// `end_time`, not at the moment `end_campaign`/`update_status` is called.
+#[test]
+fn test_request_refund_ended_campaign_window_closes_from_scheduled_end_time() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
+
+    let creator = Address::generate(&env);
+    let goal_amount = 10_000;
+    let end_time = env.ledger().timestamp() + 1_000;
+    let donor = Address::generate(&env);
+    let asset = AssetInfo::Token(register_funded_token(&env, &donor, 4_000));
+    let accepted_assets = soroban_sdk::vec![&env, asset.clone()];
+    let milestones = soroban_sdk::vec![
+        &env,
+        MilestoneInput {
+            target_amount: 10_000,
+            description_hash: desc_hash(&env, [0; 32]),
+        },
+    ];
+    let min_donation = 100;
+
+    client.initialize(
+        &creator,
+        &goal_amount,
+        &end_time,
+        &accepted_assets,
+        &milestones,
+        &min_donation,
+    );
+
+    client.donate(&donor, &4_000, &asset);
+
+    // Call end_campaign well past the scheduled deadline so the window
+    // (anchored at end_time, not at "now") is already exhausted.
+    env.ledger()
+        .with_mut(|l| l.timestamp = end_time + 30 * 24 * 60 * 60 + 1);
+    client.end_campaign();
+
+    assert!(!client.is_refund_eligible(&donor));
+    let result = client.try_request_refund(&donor);
+    assert_eq!(result, Err(Ok(Error::RefundWindowClosed)));
+}
+
+/// An `Ended` campaign that already released a milestone must NOT be
+/// refundable - those funds already left the contract for the creator.
+#[test]
+fn test_request_refund_ended_campaign_with_released_milestone_not_eligible() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
+
+    let creator = Address::generate(&env);
+    let goal_amount = 10_000;
+    let end_time = env.ledger().timestamp() + 1_000;
+    let donor = Address::generate(&env);
+    let asset = AssetInfo::Token(register_funded_token(&env, &donor, 10_000));
+    let accepted_assets = soroban_sdk::vec![&env, asset.clone()];
+    let milestones = soroban_sdk::vec![
+        &env,
+        MilestoneInput {
+            target_amount: 10_000,
+            description_hash: desc_hash(&env, [0; 32]),
+        },
+    ];
+    let min_donation = 100;
+
+    client.initialize(
+        &creator,
+        &goal_amount,
+        &end_time,
+        &accepted_assets,
+        &milestones,
+        &min_donation,
+    );
+
+    client.donate(&donor, &10_000, &asset);
+    client.release_milestone(&0, &creator);
+
+    env.ledger().with_mut(|l| l.timestamp = end_time + 1);
+    client.end_campaign();
+
+    let campaign_data = client.get_campaign_info();
+    assert_eq!(campaign_data.status, CampaignStatus::Ended);
+    assert!(campaign_data.released_amount > 0);
+
+    assert!(!client.is_refund_eligible(&donor));
+    let result = client.try_request_refund(&donor);
+    assert_eq!(result, Err(Ok(Error::CampaignNotActive)));
 }
 
 #[test]
@@ -761,7 +1005,7 @@ fn test_refund_window_boundary_at_expiration() {
     env.ledger()
         .with_mut(|l| l.timestamp = cancel_time + 30 * 24 * 60 * 60);
     assert!(client.is_refund_eligible(&donor));
-    let result = client.try_refund(&donor);
+    let result = client.try_request_refund(&donor);
     assert!(
         result.is_ok(),
         "refund at boundary should succeed: {:?}",
@@ -815,7 +1059,7 @@ fn test_refund_window_closed_after_boundary() {
     assert!(!client.is_refund_eligible(&donor));
 
     // Try to refund - should fail with RefundWindowClosed
-    let result = client.try_refund(&donor);
+    let result = client.try_request_refund(&donor);
     assert_eq!(result, Err(Ok(Error::RefundWindowClosed)));
 }
 
@@ -855,7 +1099,7 @@ fn test_refund_only_in_cancelled_or_failed_status() {
 
     // Try to refund while campaign is still active - should fail
     assert!(!client.is_refund_eligible(&donor));
-    let result = client.try_refund(&donor);
+    let result = client.try_request_refund(&donor);
     assert_eq!(result, Err(Ok(Error::CampaignNotActive)));
 }
 
@@ -904,7 +1148,7 @@ fn test_fail_campaign_starts_refund_window() {
     assert!(client.is_refund_eligible(&donor));
 
     // Process refund
-    let result = client.try_refund(&donor);
+    let result = client.try_request_refund(&donor);
     assert!(result.is_ok(), "refund after failure failed: {:?}", result);
 }
 
@@ -950,7 +1194,7 @@ fn test_refund_requires_donor_authorization() {
 
     // Try to refund without donor authorization
     let unauthorized_caller = Address::generate(&env);
-    let result = CampaignContractClient::new(&env, &contract_id).try_refund(&donor);
+    let result = CampaignContractClient::new(&env, &contract_id).try_request_refund(&donor);
     // Authorization should fail at require_auth()
     assert!(result.is_err());
 }
@@ -1054,16 +1298,25 @@ fn test_get_refundable_amount() {
     assert_eq!(client.get_refundable_amount(&donor), 0);
 }
 
+/// Cancellation must remain possible once funds have been raised (even a
+/// single stroop) as long as nothing has been released to the creator yet -
+/// those raised-but-unreleased funds are exactly what `request_refund` pays
+/// back once the campaign is Cancelled. (This used to be blocked by an
+/// overly strict `raised_amount != 0` guard, which made a funded campaign
+/// impossible to ever cancel/refund - see `cancel_campaign` doc comment.)
 #[test]
-fn test_cancel_campaign_with_one_stroop_raised_fails() {
+fn test_cancel_campaign_with_raised_but_unreleased_funds_succeeds() {
     let env = Env::default();
+    env.mock_all_auths();
     let contract_id = env.register_contract(None, CampaignContract);
     let client = CampaignContractClient::new(&env, &contract_id);
 
     let creator = Address::generate(&env);
     let goal_amount = 10_000;
     let end_time = env.ledger().timestamp() + 1000;
-    let accepted_assets = soroban_sdk::vec![&env, AssetInfo::Native];
+    let donor = Address::generate(&env);
+    let asset = AssetInfo::Token(register_funded_token(&env, &donor, 1));
+    let accepted_assets = soroban_sdk::vec![&env, asset.clone()];
     let milestones = soroban_sdk::vec![
         &env,
         MilestoneInput {
@@ -1083,19 +1336,64 @@ fn test_cancel_campaign_with_one_stroop_raised_fails() {
         &min_donation,
     );
 
-    let token_address = Address::generate(&env);
-    client.set_xlm_token(&token_address);
+    client.donate(&donor, &1, &asset);
 
+    let result = client.try_cancel_campaign();
+    assert!(
+        result.is_ok(),
+        "cancel with unreleased funds should succeed: {:?}",
+        result
+    );
+
+    let campaign_data = client.get_campaign_info();
+    assert_eq!(campaign_data.status, CampaignStatus::Cancelled);
+
+    // And the donor can now actually get their stroop back.
+    assert!(client.is_refund_eligible(&donor));
+}
+
+/// Once any milestone funds have been released to the creator, cancellation
+/// must be blocked - those funds have already left the contract and are no
+/// longer available to make donors whole.
+#[test]
+fn test_cancel_campaign_after_milestone_released_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
+
+    let creator = Address::generate(&env);
+    let goal_amount = 10_000;
+    let end_time = env.ledger().timestamp() + 1000;
     let donor = Address::generate(&env);
-    client.donate(&donor, &1, &AssetInfo::Native);
+    let asset = AssetInfo::Token(register_funded_token(&env, &donor, 10_000));
+    let accepted_assets = soroban_sdk::vec![&env, asset.clone()];
+    let milestones = soroban_sdk::vec![
+        &env,
+        MilestoneInput {
+            target_amount: 10_000,
+            description_hash: desc_hash(&env, [0; 32]),
+        },
+    ];
+    let min_donation = 100;
 
-    // Cancel must fail once any funds have been raised (even a single stroop)
+    client.initialize(
+        &creator,
+        &goal_amount,
+        &end_time,
+        &accepted_assets,
+        &milestones,
+        &min_donation,
+    );
+
+    client.donate(&donor, &10_000, &asset);
+    client.release_milestone(&0, &creator);
+
     let result = client.try_cancel_campaign();
     assert_eq!(result, Err(Ok(Error::CannotCancelWithFunds)));
 
-    // Status remains Active
     let campaign_data = client.get_campaign_info();
-    assert_eq!(campaign_data.status, CampaignStatus::Active);
+    assert_eq!(campaign_data.status, CampaignStatus::GoalReached);
 }
 
 #[test]
@@ -1407,7 +1705,8 @@ fn test_initialize_zero_goal() {
         },
     ];
 
-    let result = client.try_initialize(&creator, &0, &end_time, &accepted_assets, &milestones, &100);
+    let result =
+        client.try_initialize(&creator, &0, &end_time, &accepted_assets, &milestones, &100);
     assert_eq!(result, Err(Ok(Error::InvalidGoalAmount)));
 }
 
@@ -1864,7 +2163,10 @@ fn test_donate_exact_goal_transitions_to_goal_reached() {
     let donor = Address::generate(&env);
     client.donate(&donor, &10_000, &AssetInfo::Native);
 
-    assert_eq!(client.get_campaign_info().status, CampaignStatus::GoalReached);
+    assert_eq!(
+        client.get_campaign_info().status,
+        CampaignStatus::GoalReached
+    );
 }
 
 #[test]
@@ -1894,7 +2196,10 @@ fn test_donate_after_goal_reached_still_accepts() {
 
     let donor = Address::generate(&env);
     client.donate(&donor, &10_000, &AssetInfo::Native);
-    assert_eq!(client.get_campaign_info().status, CampaignStatus::GoalReached);
+    assert_eq!(
+        client.get_campaign_info().status,
+        CampaignStatus::GoalReached
+    );
 
     // Donating more after goal is still accepted
     let result = client.try_donate(&donor, &5_000, &AssetInfo::Native);
@@ -2462,7 +2767,8 @@ fn test_per_asset_breakdown_two_assets() {
     let creator = Address::generate(&env);
     let end_time = env.ledger().timestamp() + 1_000;
     let token_b = Address::generate(&env);
-    let accepted_assets = soroban_sdk::vec![&env, AssetInfo::Native, AssetInfo::Token(token_b.clone())];
+    let accepted_assets =
+        soroban_sdk::vec![&env, AssetInfo::Native, AssetInfo::Token(token_b.clone())];
     let milestones = soroban_sdk::vec![
         &env,
         MilestoneInput {
@@ -2510,7 +2816,8 @@ fn test_per_asset_breakdown_multiple_donors() {
     let creator = Address::generate(&env);
     let end_time = env.ledger().timestamp() + 1_000;
     let token_b = Address::generate(&env);
-    let accepted_assets = soroban_sdk::vec![&env, AssetInfo::Native, AssetInfo::Token(token_b.clone())];
+    let accepted_assets =
+        soroban_sdk::vec![&env, AssetInfo::Native, AssetInfo::Token(token_b.clone())];
     let milestones = soroban_sdk::vec![
         &env,
         MilestoneInput {
@@ -2851,7 +3158,10 @@ fn test_end_campaign_from_goal_reached() {
 
     let donor = Address::generate(&env);
     client.donate(&donor, &10_000, &AssetInfo::Native);
-    assert_eq!(client.get_campaign_info().status, CampaignStatus::GoalReached);
+    assert_eq!(
+        client.get_campaign_info().status,
+        CampaignStatus::GoalReached
+    );
 
     // Ending from GoalReached should succeed
     client.end_campaign();
@@ -2885,7 +3195,10 @@ fn test_fail_campaign_from_goal_reached() {
 
     let donor = Address::generate(&env);
     client.donate(&donor, &10_000, &AssetInfo::Native);
-    assert_eq!(client.get_campaign_info().status, CampaignStatus::GoalReached);
+    assert_eq!(
+        client.get_campaign_info().status,
+        CampaignStatus::GoalReached
+    );
 
     // Fail from GoalReached should succeed
     client.fail_campaign();
@@ -2979,8 +3292,8 @@ fn test_extend_deadline_by_non_creator() {
     );
 
     let non_creator = Address::generate(&env);
-    let result = CampaignContractClient::new(&env, &contract_id)
-        .try_extend_deadline(&(end_time + 500));
+    let result =
+        CampaignContractClient::new(&env, &contract_id).try_extend_deadline(&(end_time + 500));
     // Should fail because non_creator is not authorized
     assert!(result.is_err());
 }
@@ -3028,7 +3341,7 @@ fn test_extend_deadline_to_earlier_time() {
 /// Ensures no panics and invariants hold for each amount.
 #[test]
 fn fuzz_donate_various_valid_amounts() {
-    let amounts: Vec<i128> = vec![1, 50, 99, 100, 500, 1_000, 9_999, 10_000, 50_000, 100_000];
+    let amounts: [i128; 10] = [1, 50, 99, 100, 500, 1_000, 9_999, 10_000, 50_000, 100_000];
 
     for amount in amounts {
         let env = soroban_sdk::Env::default();
@@ -3047,7 +3360,14 @@ fn fuzz_donate_various_valid_amounts() {
             },
         ];
 
-        client.initialize(&creator, &goal, &end_time, &accepted_assets, &milestones, &1);
+        client.initialize(
+            &creator,
+            &goal,
+            &end_time,
+            &accepted_assets,
+            &milestones,
+            &1,
+        );
 
         let donor = soroban_sdk::Address::generate(&env);
         let result = client.try_donate(&donor, &amount, &AssetInfo::Native);
@@ -3062,14 +3382,14 @@ fn fuzz_donate_various_valid_amounts() {
 /// Fuzz foundation: exercise various valid milestone configurations.
 #[test]
 fn fuzz_valid_milestone_configurations() {
-    let configs: Vec<Vec<i128>> = vec![
-        vec![1_000],
-        vec![500, 1_000],
-        vec![1_000, 2_000, 3_000],
-        vec![100, 200, 300, 400, 500],
-        vec![1, 100, 1_000, 10_000, 100_000],
-        vec![1, 2, 3, 4, 5],
-        vec![50_000, 100_000],
+    let configs: [&[i128]; 7] = [
+        &[1_000],
+        &[500, 1_000],
+        &[1_000, 2_000, 3_000],
+        &[100, 200, 300, 400, 500],
+        &[1, 100, 1_000, 10_000, 100_000],
+        &[1, 2, 3, 4, 5],
+        &[50_000, 100_000],
     ];
 
     for targets in configs {
@@ -3081,19 +3401,27 @@ fn fuzz_valid_milestone_configurations() {
         let goal = *targets.last().unwrap();
         let end_time = env.ledger().timestamp() + 100_000;
         let accepted_assets = soroban_sdk::vec![&env, AssetInfo::Native];
-        let milestones: soroban_sdk::Vec<MilestoneInput> = targets
-            .iter()
-            .enumerate()
-            .map(|(i, &target)| MilestoneInput {
+        let mut milestones: soroban_sdk::Vec<MilestoneInput> = soroban_sdk::Vec::new(&env);
+        for (i, &target) in targets.iter().enumerate() {
+            milestones.push_back(MilestoneInput {
                 target_amount: target,
                 description_hash: desc_hash(&env, [i as u8; 32]),
-            })
-            .collect();
+            });
+        }
 
         let result = client.try_initialize(
-            &creator, &goal, &end_time, &accepted_assets, &milestones, &1,
+            &creator,
+            &goal,
+            &end_time,
+            &accepted_assets,
+            &milestones,
+            &1,
         );
-        assert!(result.is_ok(), "valid config should initialize: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "valid config should initialize: {:?}",
+            result
+        );
 
         let data = client.get_campaign_info();
         assert_eq!(data.milestone_count, targets.len() as u32);
@@ -3103,12 +3431,12 @@ fn fuzz_valid_milestone_configurations() {
 /// Fuzz foundation: sequential donations with varying amounts always maintain invariants.
 #[test]
 fn fuzz_sequential_donations_maintain_invariants() {
-    let donation_sequences: Vec<Vec<i128>> = vec![
-        vec![100, 200, 300],
-        vec![1, 1, 1, 1, 1],
-        vec![50_000, 1, 1_000],
-        vec![10_000, 10_000, 10_000],
-        vec![99, 101],
+    let donation_sequences: [&[i128]; 5] = [
+        &[100, 200, 300],
+        &[1, 1, 1, 1, 1],
+        &[50_000, 1, 1_000],
+        &[10_000, 10_000, 10_000],
+        &[99, 101],
     ];
 
     for donations in donation_sequences {
@@ -3129,15 +3457,31 @@ fn fuzz_sequential_donations_maintain_invariants() {
             },
         ];
 
-        client.initialize(&creator, &goal, &end_time, &accepted_assets, &milestones, &1);
+        client.initialize(
+            &creator,
+            &goal,
+            &end_time,
+            &accepted_assets,
+            &milestones,
+            &1,
+        );
 
         let donor = soroban_sdk::Address::generate(&env);
         for (idx, amount) in donations.iter().enumerate() {
             let _ = client.try_donate(&donor, amount, &AssetInfo::Native);
             let data = client.get_campaign_info();
-            assert!(data.raised_amount >= 0, "raised went negative at idx {}", idx);
-            assert!(data.released_amount <= data.raised_amount,
-                "released > raised at idx {}: {} > {}", idx, data.released_amount, data.raised_amount);
+            assert!(
+                data.raised_amount >= 0,
+                "raised went negative at idx {}",
+                idx
+            );
+            assert!(
+                data.released_amount <= data.raised_amount,
+                "released > raised at idx {}: {} > {}",
+                idx,
+                data.released_amount,
+                data.raised_amount
+            );
         }
     }
 }
@@ -3145,10 +3489,10 @@ fn fuzz_sequential_donations_maintain_invariants() {
 /// Fuzz foundation: milestone release order enforcement with various configurations.
 #[test]
 fn fuzz_milestone_release_order_enforcement() {
-    let milestone_sets: Vec<Vec<i128>> = vec![
-        vec![1_000, 2_000],
-        vec![500, 1_000, 1_500, 2_000, 2_500],
-        vec![3_000, 7_000],
+    let milestone_sets: [&[i128]; 3] = [
+        &[1_000, 2_000],
+        &[500, 1_000, 1_500, 2_000, 2_500],
+        &[3_000, 7_000],
     ];
 
     for targets in milestone_sets {
@@ -3160,16 +3504,22 @@ fn fuzz_milestone_release_order_enforcement() {
         let goal = *targets.last().unwrap();
         let end_time = env.ledger().timestamp() + 100_000;
         let accepted_assets = soroban_sdk::vec![&env, AssetInfo::Native];
-        let milestones: soroban_sdk::Vec<MilestoneInput> = targets
-            .iter()
-            .enumerate()
-            .map(|(i, &target)| MilestoneInput {
+        let mut milestones: soroban_sdk::Vec<MilestoneInput> = soroban_sdk::Vec::new(&env);
+        for (i, &target) in targets.iter().enumerate() {
+            milestones.push_back(MilestoneInput {
                 target_amount: target,
                 description_hash: desc_hash(&env, [i as u8; 32]),
-            })
-            .collect();
+            });
+        }
 
-        client.initialize(&creator, &goal, &end_time, &accepted_assets, &milestones, &1);
+        client.initialize(
+            &creator,
+            &goal,
+            &end_time,
+            &accepted_assets,
+            &milestones,
+            &1,
+        );
 
         // Donate enough to unlock all milestones
         let donor = soroban_sdk::Address::generate(&env);

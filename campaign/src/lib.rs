@@ -296,7 +296,11 @@ impl CampaignContract {
         }
 
         env.events().publish(
-            (Symbol::new(&env, "campaign_initialized"), env.current_contract_address(), creator),
+            (
+                Symbol::new(&env, "campaign_initialized"),
+                env.current_contract_address(),
+                creator,
+            ),
             (goal_amount, end_time, accepted_assets, milestones),
         );
 
@@ -432,7 +436,6 @@ impl CampaignContract {
                             recipient.clone(),
                             env.ledger().timestamp(),
                         ),
-                        (per_asset_release, env.ledger().timestamp()),
                     );
                 }
             }
@@ -511,10 +514,51 @@ impl CampaignContract {
         Ok(milestones)
     }
 
+    /// Internal: campaign-level refund window deadline (unix timestamp), or
+    /// `None` if the campaign's current status/state does not permit refunds
+    /// at all. This is the single source of truth for refund eligibility and
+    /// is shared by `is_refund_eligible`, `get_refund_window_remaining`, and
+    /// `request_refund` so the view function and the enforcement path can
+    /// never diverge.
+    ///
+    /// A campaign is refundable when it is:
+    /// - `Cancelled` (or the legacy `Failed` status, which this contract
+    ///   treats the same way - both are terminal, pre-payout states reached
+    ///   via `cancel_campaign`/`fail_campaign`, which are only reachable
+    ///   while `raised_amount == 0` and no milestone has ever unlocked).
+    ///   The window is anchored at the recorded cancellation/failure
+    ///   timestamp (`storage::get_campaign_end_time`).
+    /// - `Ended` (deadline passed, naturally or via `end_campaign`) with
+    ///   **zero milestones released** (`released_amount == 0`). If any
+    ///   milestone was released, those funds already left the contract for
+    ///   the creator and are not available to refund. The window is
+    ///   anchored at the campaign's scheduled `end_time`, since ending never
+    ///   sets `CampaignEndTime` (see `end_campaign` / `update_status`).
+    ///
+    /// Any other status (`Active`, `GoalReached`, `Successful`) is never
+    /// refundable.
+    fn refund_window_deadline(env: &Env, campaign_data: &CampaignData) -> Option<u64> {
+        let anchor = match campaign_data.status {
+            CampaignStatus::Cancelled | CampaignStatus::Failed => {
+                storage::get_campaign_end_time(env)?
+            }
+            CampaignStatus::Ended => {
+                if campaign_data.released_amount != 0 {
+                    return None;
+                }
+                campaign_data.end_time
+            }
+            _ => return None,
+        };
+        Some(anchor + REFUND_WINDOW)
+    }
+
     /// Checks if a donor is eligible for a refund.
     /// Returns true if:
-    /// - The campaign is in Cancelled or Failed status
-    /// - The current time is within the refund window (30 days from campaign end)
+    /// - The campaign is `Cancelled` (or legacy `Failed`), OR `Ended` with
+    ///   zero milestones released
+    /// - The current time is within the refund window (30 days, anchored per
+    ///   `refund_window_deadline`)
     /// - The donor has a non-zero donation record
     pub fn is_refund_eligible(env: Env, donor: Address) -> bool {
         let campaign_data = match storage::get_campaign_data(&env) {
@@ -522,22 +566,12 @@ impl CampaignContract {
             None => return false,
         };
 
-        // Check campaign status - only Cancelled or Failed campaigns allow refunds
-        if !matches!(
-            campaign_data.status,
-            CampaignStatus::Cancelled | CampaignStatus::Failed
-        ) {
-            return false;
-        }
-
-        // Check refund window
-        let campaign_end_time = match storage::get_campaign_end_time(&env) {
-            Some(time) => time,
+        let deadline = match Self::refund_window_deadline(&env, &campaign_data) {
+            Some(deadline) => deadline,
             None => return false,
         };
 
-        let current_time = env.ledger().timestamp();
-        if current_time > campaign_end_time + REFUND_WINDOW {
+        if env.ledger().timestamp() > deadline {
             return false;
         }
 
@@ -552,31 +586,29 @@ impl CampaignContract {
     /// Returns None if the campaign is not in a refundable state or the window has closed.
     pub fn get_refund_window_remaining(env: Env) -> Option<u64> {
         let campaign_data = storage::get_campaign_data(&env)?;
-
-        if !matches!(
-            campaign_data.status,
-            CampaignStatus::Cancelled | CampaignStatus::Failed
-        ) {
-            return None;
-        }
-
-        let campaign_end_time = storage::get_campaign_end_time(&env)?;
+        let deadline = Self::refund_window_deadline(&env, &campaign_data)?;
         let current_time = env.ledger().timestamp();
 
-        if current_time > campaign_end_time + REFUND_WINDOW {
+        if current_time > deadline {
             return None;
         }
 
-        Some((campaign_end_time + REFUND_WINDOW) - current_time)
+        Some(deadline - current_time)
     }
 
-    /// Refunds the donor's exact contributions per asset.
-    /// This function:
-    /// - Checks refund eligibility and window
-    /// - Refunds each asset exactly as contributed (no rounding losses)
-    /// - Clears the donor's record after successful refund
-    /// - Panics with RefundWindowClosed if called after the window
-    pub fn refund(env: Env, donor: Address) -> Result<(), Error> {
+    /// Requests a refund of the donor's exact contributions, per asset.
+    ///
+    /// - `donor.require_auth()`: only the donor themselves can trigger their refund.
+    /// - Re-validates eligibility server-side via `refund_window_deadline` (the
+    ///   same rule the `is_refund_eligible` view exposes) rather than trusting
+    ///   any client-supplied state.
+    /// - Checks the donor has a non-zero recorded balance.
+    /// - Transfers each asset back to the donor exactly as contributed (no
+    ///   rounding losses).
+    /// - Clears the donor's record so a second call is a no-op that panics
+    ///   with `NoRefundAvailable` (double-refund protection).
+    /// - Emits `refund_issued` once per asset with a non-zero refund amount.
+    pub fn request_refund(env: Env, donor: Address) -> Result<(), Error> {
         donor.require_auth();
 
         // Check that contract is not frozen
@@ -586,26 +618,19 @@ impl CampaignContract {
 
         let campaign_data = get_campaign_data(&env)?;
 
-        // Check campaign status
-        if !matches!(
-            campaign_data.status,
-            CampaignStatus::Cancelled | CampaignStatus::Failed
-        ) {
-            return Err(Error::CampaignNotActive);
-        }
-
-        // Check and enforce refund window
-        let campaign_end_time = match storage::get_campaign_end_time(&env) {
-            Some(time) => time,
-            None => return Err(Error::NoRefundAvailable),
+        // Server-side re-validation of eligibility - never trust the caller's
+        // view of `is_refund_eligible`.
+        let deadline = match Self::refund_window_deadline(&env, &campaign_data) {
+            Some(deadline) => deadline,
+            None => return Err(Error::CampaignNotActive),
         };
 
         let current_time = env.ledger().timestamp();
-        if current_time > campaign_end_time + REFUND_WINDOW {
+        if current_time > deadline {
             return Err(Error::RefundWindowClosed);
         }
 
-        // Get donor record
+        // Get donor record and check non-zero balance
         let donor_record = match storage::get_donor_data(&env, &donor) {
             Some(record) => record,
             None => return Err(Error::NoRefundAvailable),
@@ -614,6 +639,19 @@ impl CampaignContract {
         if donor_record.total_donated == 0 {
             return Err(Error::NoRefundAvailable);
         }
+
+        // Clear the donor's record before transferring so a reentrant or
+        // repeated call sees a zero balance (double-refund protection).
+        storage::set_donor_data(
+            &env,
+            &donor,
+            &DonorRecord {
+                donor: donor.clone(),
+                total_donated: 0,
+                per_asset: Vec::new(&env),
+                last_donation_time: 0,
+            },
+        );
 
         // Refund each asset exactly as contributed (no rounding)
         let mut total_refunded: i128 = 0;
@@ -630,31 +668,34 @@ impl CampaignContract {
                 };
 
                 env.events().publish(
-                    (symbol_short!("refund"),),
+                    (
+                        Symbol::new(&env, "refund_issued"),
+                        env.current_contract_address(),
+                    ),
                     (donor.clone(), per_asset.amount, per_asset.asset.clone()),
                 );
             }
         }
 
-        // Clear donor record after successful refund
-        storage::set_donor_data(
-            &env,
-            &donor,
-            &DonorRecord {
-                donor: donor.clone(),
-                total_donated: 0,
-                per_asset: Vec::new(&env),
-                last_donation_time: 0,
-            },
-        );
-
         Ok(())
+    }
+
+    /// Legacy alias for `request_refund`, kept for backward compatibility
+    /// with existing callers/tests. Delegates entirely to `request_refund`.
+    pub fn refund(env: Env, donor: Address) -> Result<(), Error> {
+        Self::request_refund(env, donor)
     }
 
     /// Cancels the campaign and starts the refund window.
     /// Only callable by the campaign creator.
-    /// Only permitted while no funds have been raised (`raised_amount == 0`);
-    /// otherwise fails with `CannotCancelWithFunds`.
+    /// Only permitted while no funds have been released to the creator
+    /// (`released_amount == 0`); otherwise fails with `CannotCancelWithFunds`.
+    /// Donations already raised are explicitly fine - they are exactly what
+    /// `request_refund` pays back to donors once the campaign is Cancelled.
+    /// Blocking cancellation on `raised_amount != 0` instead would make a
+    /// funded campaign impossible to cancel at all, permanently stranding
+    /// donor funds with no way to trigger the refund window - the opposite
+    /// of this contract's refund guarantee.
     /// Sets the campaign status to Cancelled and records the end time for refund window calculation.
     pub fn cancel_campaign(env: Env) -> Result<(), Error> {
         let mut campaign_data = get_campaign_data(&env)?;
@@ -673,8 +714,10 @@ impl CampaignContract {
             return Err(Error::CampaignNotActive);
         }
 
-        // Cancellation is only permitted while nothing has been raised
-        if campaign_data.raised_amount != 0 {
+        // Cancellation is only blocked once funds have actually been paid out
+        // to the creator - raised-but-unreleased donations remain fully
+        // refundable and must not block cancellation.
+        if campaign_data.released_amount != 0 {
             return Err(Error::CannotCancelWithFunds);
         }
 
@@ -1012,8 +1055,17 @@ impl CampaignContract {
         };
 
         env.events().publish(
-            (Symbol::new(&env, "donation_received"), env.current_contract_address()),
-            (donor, amount, asset_code, data.raised_amount, env.ledger().timestamp()),
+            (
+                Symbol::new(&env, "donation_received"),
+                env.current_contract_address(),
+            ),
+            (
+                donor,
+                amount,
+                asset_code,
+                data.raised_amount,
+                env.ledger().timestamp(),
+            ),
         );
 
         Ok(())
@@ -1023,4 +1075,5 @@ impl CampaignContract {
 #[cfg(test)]
 mod event_test;
 
+#[cfg(test)]
 mod test;
