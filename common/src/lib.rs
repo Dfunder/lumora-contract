@@ -144,7 +144,11 @@ pub fn description_hash_bytes(hash: &BytesN<32>) -> [u8; 32] {
 /// Validates that the creator is authorized to perform an operation.
 /// This is called after `creator.require_auth()` has been invoked to ensure
 /// explicit authorization checks are in place at operation boundaries.
-pub fn check_creator_auth(env: &Env, creator: &Address, caller: &Address) -> Result<(), ErrorCode> {
+pub fn check_creator_auth(
+    _env: &Env,
+    creator: &Address,
+    caller: &Address,
+) -> Result<(), ErrorCode> {
     if *creator != *caller {
         return Err(ErrorCode::Unauthorized);
     }
@@ -153,7 +157,7 @@ pub fn check_creator_auth(env: &Env, creator: &Address, caller: &Address) -> Res
 
 /// Validates that the contract is not frozen (unable to accept modifications).
 /// Frozen contracts prevent state transitions and new operations.
-pub fn check_contract_not_frozen(env: &Env, is_frozen: bool) -> Result<(), ErrorCode> {
+pub fn check_contract_not_frozen(_env: &Env, is_frozen: bool) -> Result<(), ErrorCode> {
     if is_frozen {
         return Err(ErrorCode::Unauthorized);
     }
@@ -162,7 +166,7 @@ pub fn check_contract_not_frozen(env: &Env, is_frozen: bool) -> Result<(), Error
 
 /// Validates that the contract is not locked (no concurrent modifications).
 /// Locked contracts prevent re-entrant calls and concurrent state modifications.
-pub fn check_contract_not_locked(env: &Env, is_locked: bool) -> Result<(), ErrorCode> {
+pub fn check_contract_not_locked(_env: &Env, is_locked: bool) -> Result<(), ErrorCode> {
     if is_locked {
         return Err(ErrorCode::Unauthorized);
     }
@@ -183,7 +187,7 @@ pub fn check_not_already_initialized(is_initialized: bool) -> Result<(), ErrorCo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::testutils::{Address as _, Ledger as _};
 
     #[test]
     fn test_version() {
@@ -297,8 +301,14 @@ mod tests {
 
     #[test]
     fn test_validate_add_overflow() {
-        assert_eq!(validate_add(i128::MAX, 1), Err(ErrorCode::ArithmeticOverflow));
-        assert_eq!(validate_add(i128::MAX, i128::MAX), Err(ErrorCode::ArithmeticOverflow));
+        assert_eq!(
+            validate_add(i128::MAX, 1),
+            Err(ErrorCode::ArithmeticOverflow)
+        );
+        assert_eq!(
+            validate_add(i128::MAX, i128::MAX),
+            Err(ErrorCode::ArithmeticOverflow)
+        );
     }
 
     #[test]
@@ -311,8 +321,14 @@ mod tests {
 
     #[test]
     fn test_validate_sub_overflow() {
-        assert_eq!(validate_sub(i128::MIN, 1), Err(ErrorCode::ArithmeticOverflow));
-        assert_eq!(validate_sub(0, i128::MIN), Err(ErrorCode::ArithmeticOverflow));
+        assert_eq!(
+            validate_sub(i128::MIN, 1),
+            Err(ErrorCode::ArithmeticOverflow)
+        );
+        assert_eq!(
+            validate_sub(0, i128::MIN),
+            Err(ErrorCode::ArithmeticOverflow)
+        );
     }
 
     #[test]
@@ -324,9 +340,18 @@ mod tests {
 
     #[test]
     fn test_validate_mul_overflow() {
-        assert_eq!(validate_mul(i128::MAX, 2), Err(ErrorCode::ArithmeticOverflow));
-        assert_eq!(validate_mul(i128::MAX, i128::MAX), Err(ErrorCode::ArithmeticOverflow));
-        assert_eq!(validate_mul(i128::MIN, 2), Err(ErrorCode::ArithmeticOverflow));
+        assert_eq!(
+            validate_mul(i128::MAX, 2),
+            Err(ErrorCode::ArithmeticOverflow)
+        );
+        assert_eq!(
+            validate_mul(i128::MAX, i128::MAX),
+            Err(ErrorCode::ArithmeticOverflow)
+        );
+        assert_eq!(
+            validate_mul(i128::MIN, 2),
+            Err(ErrorCode::ArithmeticOverflow)
+        );
     }
 
     #[test]
@@ -437,7 +462,10 @@ mod tests {
     #[test]
     fn test_validate_add_i128_min() {
         assert_eq!(validate_add(i128::MIN, 0), Ok(i128::MIN));
-        assert_eq!(validate_add(i128::MIN, -1), Err(ErrorCode::ArithmeticOverflow));
+        assert_eq!(
+            validate_add(i128::MIN, -1),
+            Err(ErrorCode::ArithmeticOverflow)
+        );
     }
 
     #[test]
@@ -449,6 +477,9 @@ mod tests {
     #[test]
     fn test_validate_div_i128_min_by_neg1() {
         // i128::MIN / -1 would overflow in two's complement
-        assert_eq!(validate_div(i128::MIN, -1), Err(ErrorCode::ArithmeticOverflow));
+        assert_eq!(
+            validate_div(i128::MIN, -1),
+            Err(ErrorCode::ArithmeticOverflow)
+        );
     }
 }

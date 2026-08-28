@@ -164,7 +164,13 @@ fn donation_received_event_has_required_payload_with_timestamp() {
 
     let event_topics: Vec<Val> =
         (Symbol::new(&env, "donation_received"), contract_id.clone()).into_val(&env);
-    let expected_data = (donor.clone(), 500_i128, token.to_string(), 500_i128, 12345_u64);
+    let expected_data = (
+        donor.clone(),
+        500_i128,
+        token.to_string(),
+        500_i128,
+        12345_u64,
+    );
 
     let mut donation_events = 0;
     for event in env.events().all().iter() {
@@ -176,6 +182,56 @@ fn donation_received_event_has_required_payload_with_timestamp() {
         }
     }
     assert_eq!(donation_events, 1);
+}
+
+#[test]
+fn refund_issued_event_has_required_payload_for_each_asset() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, CampaignContract);
+    let client = CampaignContractClient::new(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let donor = Address::generate(&env);
+    let asset_a = AssetInfo::Token(register_funded_token(&env, &donor, 3_000));
+    let asset_b = AssetInfo::Token(register_funded_token(&env, &donor, 2_000));
+
+    client.initialize(
+        &creator,
+        &10_000,
+        &(env.ledger().timestamp() + 1_000),
+        &soroban_sdk::vec![&env, asset_a.clone(), asset_b.clone()],
+        &soroban_sdk::vec![&env, milestone(10_000, &env)],
+        &1,
+    );
+    client.donate(&donor, &3_000, &asset_a);
+    client.donate(&donor, &2_000, &asset_b);
+
+    client.cancel_campaign();
+    client.request_refund(&donor);
+
+    let event_topics: Vec<Val> =
+        (Symbol::new(&env, "refund_issued"), contract_id.clone()).into_val(&env);
+    let expected_a = (donor.clone(), 3_000_i128, asset_a);
+    let expected_b = (donor.clone(), 2_000_i128, asset_b);
+    let mut asset_a_events = 0;
+    let mut asset_b_events = 0;
+
+    for event in env.events().all().iter() {
+        if event.1 == event_topics {
+            assert_eq!(event.0, contract_id);
+            let data: (Address, i128, AssetInfo) = event.2.into_val(&env);
+            if data == expected_a {
+                asset_a_events += 1;
+            } else if data == expected_b {
+                asset_b_events += 1;
+            } else {
+                panic!("unexpected refund_issued payload");
+            }
+        }
+    }
+
+    assert_eq!((asset_a_events, asset_b_events), (1, 1));
 }
 
 #[test]
@@ -198,8 +254,12 @@ fn campaign_initialized_event_includes_contract_address() {
         &1,
     );
 
-    let event_topics: Vec<Val> =
-        (Symbol::new(&env, "campaign_initialized"), contract_id.clone(), creator.clone()).into_val(&env);
+    let event_topics: Vec<Val> = (
+        Symbol::new(&env, "campaign_initialized"),
+        contract_id.clone(),
+        creator.clone(),
+    )
+        .into_val(&env);
 
     let mut init_events = 0;
     for event in env.events().all().iter() {

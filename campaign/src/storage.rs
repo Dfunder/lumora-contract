@@ -218,7 +218,10 @@ mod tests {
         assert_eq!(loaded.end_time, data.end_time);
         assert_eq!(loaded.status, data.status);
         assert_eq!(loaded.milestone_count, data.milestone_count);
-        assert_eq!(loaded.next_releasable_milestone, data.next_releasable_milestone);
+        assert_eq!(
+            loaded.next_releasable_milestone,
+            data.next_releasable_milestone
+        );
     }
 
     #[test]

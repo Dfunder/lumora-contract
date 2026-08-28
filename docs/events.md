@@ -232,11 +232,12 @@ events.filter({
 
 ## refund_issued
 
-Emitted when a refund is successfully processed for a donor. One event is emitted per asset type refunded.
+Emitted when a refund is successfully processed for a donor via `request_refund()`. One event is emitted per asset type refunded.
 
 **Topics:**
 
-- `refund` (Symbol) - Note: Event name is "refund" in the contract
+- `refund_issued` (Symbol)
+- contract address
 
 **Data:**
 
@@ -246,21 +247,24 @@ Emitted when a refund is successfully processed for a donor. One event is emitte
 
 **Firing Condition:**
 
-- Emitted during `refund()` function
+- Emitted during `request_refund()` (the legacy `refund()` alias delegates to it, so it fires the same event)
+- `donor.require_auth()` - only the donor themselves can trigger their own refund
+- Only after eligibility is re-validated server-side (never trusts the caller's view of `is_refund_eligible`)
+- Only after the donor's recorded balance is confirmed non-zero
 - Only after successful token transfer from contract to donor
-- Only after donor record is cleared (total_donated set to 0, per_asset cleared)
-- Only if campaign is in Cancelled or Failed status
-- Only within the refund window (30 days from campaign end)
-- One event per asset type with non-zero refund amount
-- Only callable by the donor themselves
+- Only after the donor's record is cleared (total_donated set to 0, per_asset cleared) - a second call for the same donor has nothing left to refund and fails with `NoRefundAvailable` (double-refund protection)
+- Eligible campaign states, exposed via the `is_refund_eligible(donor)` view function and enforced identically inside `request_refund`:
+  - `Cancelled` (or the legacy `Failed` status, treated the same way), within the refund window (30 days from the recorded cancellation/failure time), or
+  - `Ended` with **zero milestones released** (`released_amount == 0`), within the refund window (30 days from the campaign's scheduled `end_time` - ending a campaign does not itself record a new window-start timestamp)
+- One event per asset type with a non-zero refund amount
 
 **Horizon Event Filter Example:**
 
 ```javascript
-// Filter for refund events
+// Filter for refund_issued events
 events.filter({
   contract: [CONTRACT_ADDRESS],
-  topics: [["refund"]],
+  topics: [["refund_issued"]],
 });
 ```
 
