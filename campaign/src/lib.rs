@@ -307,6 +307,23 @@ impl CampaignContract {
         Ok(())
     }
 
+    /// Releases funds for an approved milestone to the designated recipient.
+    ///
+    /// # Invariants Enforced
+    /// - **INV-02 Sequential Ordering**: Milestone `milestone_index` must equal `next_releasable_milestone`.
+    /// - **INV-04 Non-Reentrancy**: Mutex lock acquired before external token transfers.
+    /// - **INV-05 Precision & Conservation**: Proportional release calculated per accepted asset using integer division.
+    ///
+    /// # Parameters
+    /// - `milestone_index`: 0-indexed milestone position.
+    /// - `recipient`: Destination address receiving the milestone payout.
+    ///
+    /// # Errors
+    /// - `Error::ContractFrozen`: Contract paused.
+    /// - `Error::Reentrant`: Concurrent entry detected.
+    /// - `Error::PreviousMilestoneNotReleased`: Out-of-order release attempt.
+    /// - `Error::MilestoneNotFound`: Non-existent milestone index.
+    /// - `Error::MilestoneNotUnlocked`: Milestone is still in locked state.
     pub fn release_milestone(
         env: Env,
         milestone_index: u32,
@@ -914,6 +931,26 @@ impl CampaignContract {
         Ok(())
     }
 
+    /// Deposits funds from a donor into the campaign custody.
+    ///
+    /// # Invariants Enforced
+    /// - **INV-03 Asset Whitelist**: `asset` must exist in campaign's `accepted_assets`.
+    /// - **INV-04 Non-Decreasing Progress**: `total_raised` and `raised_per_asset` increase strictly monotonically.
+    /// - **INV-05 Non-Reentrancy**: Mutex lock protects deposit entry.
+    ///
+    /// # Parameters
+    /// - `donor`: Contributing address (requires authorization).
+    /// - `amount`: Quantity of asset to donate (> 0, >= min_donation_amount).
+    /// - `asset`: Accepted asset enum (Native or Token).
+    ///
+    /// # Errors
+    /// - `Error::ContractFrozen`: Contract paused by admin.
+    /// - `Error::Reentrant`: Reentrant call intercepted.
+    /// - `Error::InvalidAmount`: Amount <= 0.
+    /// - `Error::DonationTooSmall`: Amount below configured minimum.
+    /// - `Error::AssetNotAccepted`: Token not in accepted assets list.
+    /// - `Error::CampaignNotActive`: Campaign not in Active state.
+    /// - `Error::CampaignEnded`: Current ledger timestamp past deadline.
     pub fn donate(env: Env, donor: Address, amount: i128, asset: AssetInfo) -> Result<(), Error> {
         donor.require_auth();
 

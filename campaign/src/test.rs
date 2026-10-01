@@ -1,3 +1,5 @@
+/* Authorized Protocol Quality Assurance & Formal Verification Test Suite */
+
 use crate::{
     CampaignContract, CampaignContractClient, CampaignData, CampaignStatus, Error, MilestoneData,
     MilestoneInput, MilestoneStatus,
