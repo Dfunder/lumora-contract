@@ -239,6 +239,41 @@ export PGPASSWORD=<APP_PASSWORD>
 
 ---
 
+## State Recovery & Blockchain Synchronization Runbook
+
+When the PostgreSQL off-chain cache desynchronizes from the Soroban smart contract state (e.g., during database primary failover or Horizon indexer downtime):
+
+### 1. Invariant Verification & Drift Detection
+The on-chain smart contract is the immutable single source of truth. Check for state drift between the database and the ledger:
+```bash
+# Query on-chain campaign state via Soroban RPC
+soroban contract invoke \
+  --id <CAMPAIGN_CONTRACT_ID> \
+  --source <ADMIN_SECRET> \
+  --network testnet \
+  -- get_campaign_info
+```
+
+### 2. State Reconciliation Procedure
+1. **Pause Indexer Ingestion**: Scale down the indexer consumer deployment:
+   ```bash
+   kubectl scale deployment lumora-indexer --replicas=0 -n lumora-app
+   ```
+2. **Replay Missing Blocks**: Identify the last acknowledged ledger sequence number in `lumora_ledger_sync` table and replay missed events from Horizon:
+   ```bash
+   ./scripts/replay-events.sh --from-ledger <LAST_SYNCED_LEDGER> --to-ledger latest
+   ```
+3. **Audit Balance Invariant**: Verify that table `donations` aggregated sums match on-chain `TotalRaised` and `RaisedPerAsset`:
+   ```sql
+   SELECT asset, SUM(amount) AS db_total FROM donations GROUP BY asset;
+   ```
+4. **Resume Indexer**: Scale the indexer deployment back to active state:
+   ```bash
+   kubectl scale deployment lumora-indexer --replicas=2 -n lumora-app
+   ```
+
+---
+
 ## Security Notes
 
 - **Never commit plaintext passwords** to Git. Use [Sealed Secrets](https://github.com/bitnami-labs/sealed-secrets), [External Secrets Operator](https://external-secrets.io/), or HashiCorp Vault.
@@ -254,3 +289,4 @@ export PGPASSWORD=<APP_PASSWORD>
 - [PgBouncer configuration reference](https://www.pgbouncer.org/config.html)
 - [MinIO Kubernetes deployment](https://min.io/docs/minio/kubernetes/upstream/)
 - [Barman Cloud WAL archiving](https://cloudnative-pg.io/documentation/current/backup_recovery/)
+

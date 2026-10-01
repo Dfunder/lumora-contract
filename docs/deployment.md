@@ -225,3 +225,21 @@ cargo test fuzz_
 ## Rounding Strategy
 
 The campaign contract uses integer arithmetic for all financial calculations. This means that there is no floating-point arithmetic and therefore no rounding errors. When calculating the amount to release for each asset in a milestone, the contract uses a simple division and multiplication strategy. The last asset in the list of accepted assets will receive the remainder of the release amount, ensuring that the full amount is released.
+
+## Operations & Safety
+
+### 1. Runtime State Machine Invariants
+Contract administrators and node operators must monitor the following invariants:
+- **Balance Conservation**: Contract balance must match `TotalRaised - TotalReleased - TotalRefunded`.
+- **Milestone Sequentiality**: Ensure milestones transition monotonically (`Locked` -> `Unlocked` -> `Submitted` -> `Approved` -> `Released`).
+- **Non-Reentrancy Guard Active**: Contract mutex prevents simultaneous execution on fund disbursement hooks.
+
+### 2. Storage Rent & TTL Maintenance
+Soroban enforces ledger rent. To prevent key expiration:
+- **Persistent Storage Keys**: Contract config, admin keys, and donation ledgers use persistent storage.
+- **TTL Extension Routine**: Run automated keeper jobs invoking `bump_ttl` every 14 days, maintaining at least 100,000 ledgers of runway.
+
+### 3. Emergency & Recovery Runbooks
+- **Incident: Partial Multi-Asset Milestone Release**: If network congestion interrupts a batch release across multiple assets, the contract preserves per-asset release progress. Re-submitting `release_milestone(index)` safely executes remaining asset disbursements without duplicating completed transfers.
+- **Incident: Adverse State Divergence**: In the event of off-chain indexer or external dependency failures, the contract's on-chain state remains authoritative. Contract operations can be temporarily frozen via admin privilege while audit verification takes place.
+
